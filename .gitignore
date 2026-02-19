@@ -1,0 +1,39 @@
+# 数据目录
+data/
+db/
+
+# Python 缓存和虚拟环境
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.env/
+.venv/
+
+# IDE 和编辑器配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 日志和临时文件
+*.log
+*.tmp
+*.temp
+
+# 其他
+*.csv
+*.xlsx
+*.parquet
+*.h5
+*.db
+*.sqlite
