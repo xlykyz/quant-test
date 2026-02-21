@@ -78,8 +78,8 @@ NUMERIC_COLS = [
 # =====================
 
 UPSERT_SQL = """
-INSERT INTO daily_market_snapshot
-SELECT * FROM df
+INSERT INTO daily_market_snapshot (trade_date, ticker, name, open, high, low, close, pre_close, pct_change, volume, amount, turnover, market_cap, float_cap, is_st, is_limit_up, is_limit_down)
+SELECT trade_date, ticker, name, open, high, low, close, pre_close, pct_change, volume, amount, turnover, market_cap, float_cap, is_st, is_limit_up, is_limit_down FROM df
 ON CONFLICT (trade_date, ticker) DO UPDATE SET
     name = excluded.name,
     open = excluded.open,
@@ -141,7 +141,7 @@ def validate_trade_date(df: pd.DataFrame, file_path: Path):
 
 def validate_ticker(df: pd.DataFrame):
 
-    invalid = df[~df["ticker"].str.contains(r"\.(SH|SZ|BJ)$", regex=True)]
+    invalid = df[~df["ticker"].astype(str).str.strip().str.upper().str.fullmatch(r"\d{6}\.(SH|SZ|BJ)")]
 
     if not invalid.empty:
         raise ValueError(
@@ -166,7 +166,7 @@ def normalize_ticker(ticker: str) -> str:
     if ticker.startswith(("600", "601", "603", "605", "688", "689")):
         return ticker + ".SH"
 
-    if ticker.startswith(("000", "001", "002", "003", "300", "301")):
+    if ticker.startswith(("000", "001", "002", "003", "300", "301", "302")):
         return ticker + ".SZ"
 
     if ticker.startswith(("4", "8", "920")):
@@ -249,7 +249,7 @@ def clean_file(file_path: Path) -> pd.DataFrame:
     # limit calc (based on pre_close, following exchange rules)
     df["limit_pct"] = 10.0
 
-    df.loc[df["ticker"].str.startswith(("300", "301", "688", "689")), "limit_pct"] = 20.0
+    df.loc[df["ticker"].str.startswith(("300", "301", "302", "688", "689")), "limit_pct"] = 20.0
 
     df.loc[df["ticker"].str.startswith(("4", "8", "920")), "limit_pct"] = 30.0
 
