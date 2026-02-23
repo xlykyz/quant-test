@@ -1,1 +1,26 @@
-# TODO
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qrp-atlas"
+version = "0.1.0"
+description = "Personal market replay and analysis platform"
+readme = "README.md"
+requires-python = ">=3.13"
+
+# ⚠️ 只写运行必须依赖（不要写开发工具）
+dependencies = [
+    "pandas",
+    "duckdb",
+]
+
+# ==========================
+# setuptools 配置（最小）
+# ==========================
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
