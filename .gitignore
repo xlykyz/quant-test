@@ -13,6 +13,8 @@ venv/
 ENV/
 .env/
 .venv/
+*.egg-info/
+*.pyc
 
 # IDE 和编辑器配置
 .vscode/
