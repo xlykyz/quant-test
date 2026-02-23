@@ -42,19 +42,21 @@
 
 ## 🗂 Project Structure
 
-    qrp-atlas/
-    │
-    ├─ src/            # 长期功能模块
-    ├─ scripts/        # 一次性脚本
-    │
-    ├─ data/
-    │   ├─ raw/
-    │   │   └─ daily_snapshot/
-    │   ├─ canonical/  # 数据备份，可重建数据库
-    │   └─ db/
-    │       └─ quant.db
-    │
-    └─ README.md
+``` text
+qrp-atlas/
+│
+├─ src/            # 长期功能模块
+├─ scripts/        # 一次性脚本
+│
+├─ data/
+│   ├─ raw/
+│   │   └─ daily_snapshot/
+│   ├─ canonical/  # 数据备份，可重建数据库
+│   └─ db/
+│       └─ quant.db
+│
+└─ README.md
+```
 
 **📌 原则：**
 
@@ -66,7 +68,9 @@
 
 ## 🔄 Data Flow
 
-    daily_snapshot → ingestion → DuckDB
+``` text
+daily_snapshot → ingestion → DuckDB
+```
 
 进入日常阶段后：
 
@@ -106,4 +110,4 @@
 
 ## 🚧🚧🚧 Project Status 🚧🚧🚧
 
-Still at an extremely early stage — maybe around 0.001%.
+Still at an extremely early stage --- maybe around 0.001%.
