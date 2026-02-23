@@ -1,8 +1,0 @@
-Metadata-Version: 2.4
-Name: qrp-atlas
-Version: 0.1.0
-Summary: Personal market replay and analysis platform
-Requires-Python: >=3.13
-Description-Content-Type: text/markdown
-Requires-Dist: pandas
-Requires-Dist: duckdb
