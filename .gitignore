@@ -19,6 +19,7 @@ ENV/
 # IDE 和编辑器配置
 .vscode/
 .idea/
+.trae/
 *.swp
 *.swo
 *~
