@@ -97,7 +97,7 @@ def fetch_one_stock(ticker: str):
         return None
 
     # 标准化日期
-    df["trade_date"] = pd.to_datetime(df["trade_date"], errors="coerce")
+    df["trade_date"] = pd.to_datetime(df["trade_date"], errors="coerce").dt.date
     df = df.dropna(subset=["trade_date"])
     df = df.sort_values("trade_date").reset_index(drop=True)
     df = df[df["trade_date"] >= START_DATE]

@@ -89,7 +89,7 @@ def fetch_one_stock(ticker):
 
     }, inplace=True)
 
-    df["trade_date"] = pd.to_datetime(df["trade_date"])
+    df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
 
     df = df.sort_values("trade_date").reset_index(drop=True)
 
