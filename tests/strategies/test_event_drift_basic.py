@@ -223,6 +223,23 @@ def test_public_runner_equal_weight_capacity_and_costs():
             assert fill.trade_date >= "2024-03-18"
 
 
+def test_public_runner_skips_event_with_nullable_profit_range():
+    events = _events().iloc[:1].copy()
+    events["profit_change_min"] = None
+    events["profit_change_max"] = None
+
+    run = run_event_drift_portfolio_backtest(
+        events,
+        _prices(),
+        _config(),
+        trading_days=_open_dates(),
+        parameters={"hold_days": 5},
+    )
+
+    assert run.strategy_result.decisions == ()
+    assert "no_positive_events" in run.strategy_result.diagnostics
+
+
 def test_public_runner_respects_max_positions():
     run = run_event_drift_portfolio_backtest(
         _events(),

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 import pandas as pd
 
-from qrp_atlas.contracts import TICKER, TRADE_DATE
+from qrp_atlas.contracts import EARNINGS_FORECAST_EVENT, TICKER, TRADE_DATE
 from qrp_atlas.contracts import fields as contract_fields
 from qrp_atlas.indicators import (
     IndicatorParameterBinding,
@@ -42,6 +42,11 @@ class StrategyValidationError(ValueError):
 
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 StrategyInputNormalizer = Callable[[StrategyDefinition, StrategyInput], StrategyInput]
+_EVENT_FRAME_NON_NULL_FIELDS = frozenset(
+    column.name
+    for column in EARNINGS_FORECAST_EVENT.columns
+    if not column.nullable
+)
 
 
 def known_contract_fields() -> frozenset[str]:
@@ -283,6 +288,8 @@ def validate_event_strategy_input(
     if missing:
         raise StrategyValidationError(f"prepared_data missing required columns: {missing}")
     for field in definition.required_fields:
+        if field not in _EVENT_FRAME_NON_NULL_FIELDS:
+            continue
         if result[field].isna().any():
             raise StrategyValidationError(f"prepared_data contains missing values for {field!r}")
 
@@ -422,10 +429,9 @@ def _validate_holding_position_consistency(
     initial_positions: Mapping[str, bool],
     holdings: Mapping[str, StrategyHoldingState],
 ) -> None:
-    # An empty default holdings mapping means the caller is using the legacy
-    # boolean contract only. Compare representations only when typed state was
-    # actually supplied.
-    if not holdings:
+    # Empty mappings are the defaults for both representations. They cannot
+    # express an explicit empty snapshot, so compare only two populated forms.
+    if not initial_positions or not holdings:
         return
     for asset_id in set(initial_positions) | set(holdings):
         if bool(initial_positions.get(asset_id, False)) != (asset_id in holdings):

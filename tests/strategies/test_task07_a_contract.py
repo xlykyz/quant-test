@@ -184,6 +184,45 @@ def test_holdings_are_checked_against_normalized_evaluation_dates() -> None:
     assert strategy.received.prepared_data["trade_date"].tolist() == ["2024-01-02", "2024-01-03"]
 
 
+def test_holdings_and_legacy_positions_each_support_single_representation() -> None:
+    definition = _definition()
+    holdings = {
+        "A": StrategyHoldingState("A", 0.2, 2, "2023-12-20", "2024-01-01")
+    }
+
+    typed_only = _StubStrategy(StrategyRunResult(definition=definition, parameters={}))
+    run_strategy_checked(
+        typed_only,
+        StrategyInput(
+            prepared_data=_bars(),
+            holdings=holdings,
+            holdings_as_of_date="2024-01-01",
+        ),
+    )
+    assert typed_only.calls == 1
+
+    typed_with_empty_legacy = _StubStrategy(
+        StrategyRunResult(definition=definition, parameters={})
+    )
+    run_strategy_checked(
+        typed_with_empty_legacy,
+        StrategyInput(
+            prepared_data=_bars(),
+            initial_positions={},
+            holdings=holdings,
+            holdings_as_of_date="2024-01-01",
+        ),
+    )
+    assert typed_with_empty_legacy.calls == 1
+
+    legacy_only = _StubStrategy(StrategyRunResult(definition=definition, parameters={}))
+    run_strategy_checked(
+        legacy_only,
+        StrategyInput(prepared_data=_bars(), initial_positions={"A": True}),
+    )
+    assert legacy_only.calls == 1
+
+
 def test_event_normalizer_accepts_duplicate_event_identity_without_trade_date() -> None:
     definition = StrategyDefinition(
         code="event_drift_basic",
@@ -234,6 +273,85 @@ def test_event_normalizer_accepts_duplicate_event_identity_without_trade_date() 
     assert strategy.received is not None
     assert "trade_date" not in strategy.received.prepared_data.columns
     assert strategy.received.prepared_data["source_record_id"].tolist() == ["source-1", "source-2"]
+
+
+def test_event_normalizer_accepts_nullable_business_metrics() -> None:
+    definition = StrategyDefinition(
+        code="event_drift_basic",
+        name="Event Stub",
+        version="1.0.0",
+        description="event input test",
+        strategy_type=StrategyType.BUILTIN,
+        required_fields=(
+            "ticker",
+            "announcement_date",
+            "available_trade_date",
+            "forecast_type",
+            "profit_change_min",
+            "profit_change_max",
+            "event_series_id",
+            "source_record_id",
+        ),
+        required_indicators=(),
+    )
+    strategy = _StubStrategy(StrategyRunResult(definition=definition, parameters={}))
+    events = pd.DataFrame(
+        [
+            {
+                "ticker": "A",
+                "announcement_date": "2024-01-01",
+                "available_trade_date": "2024-01-03",
+                "forecast_type": "positive",
+                "profit_change_min": None,
+                "profit_change_max": None,
+                "event_series_id": "series-1",
+                "source_record_id": "source-1",
+            }
+        ]
+    )
+
+    run_strategy_checked(strategy, StrategyInput(prepared_data=events))
+
+    assert strategy.calls == 1
+
+
+@pytest.mark.parametrize("field", ["forecast_type", "event_series_id", "source_record_id"])
+def test_event_normalizer_rejects_missing_non_nullable_contract_fields(field: str) -> None:
+    definition = StrategyDefinition(
+        code="event_drift_basic",
+        name="Event Stub",
+        version="1.0.0",
+        description="event input test",
+        strategy_type=StrategyType.BUILTIN,
+        required_fields=(
+            "ticker",
+            "announcement_date",
+            "available_trade_date",
+            "forecast_type",
+            "profit_change_min",
+            "profit_change_max",
+            "event_series_id",
+            "source_record_id",
+        ),
+        required_indicators=(),
+    )
+    strategy = _StubStrategy(StrategyRunResult(definition=definition, parameters={}))
+    event = {
+        "ticker": "A",
+        "announcement_date": "2024-01-01",
+        "available_trade_date": "2024-01-03",
+        "forecast_type": "positive",
+        "profit_change_min": 1.0,
+        "profit_change_max": 2.0,
+        "event_series_id": "series-1",
+        "source_record_id": "source-1",
+    }
+    event[field] = None
+
+    with pytest.raises(StrategyValidationError, match="contains missing values"):
+        run_strategy_checked(strategy, StrategyInput(prepared_data=pd.DataFrame([event])))
+
+    assert strategy.calls == 0
 
 
 def test_registry_routes_through_checked_runner() -> None:
