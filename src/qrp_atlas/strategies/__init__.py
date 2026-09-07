@@ -7,7 +7,10 @@ from .models import (
     StrategyDecision,
     StrategyDefinition,
     StrategyInput,
+    StrategyHoldingState,
     StrategyInputScope,
+    StrategyPortfolioTarget,
+    StrategyPortfolioTargetPosition,
     StrategyRunResult,
     StrategyType,
 )
@@ -21,7 +24,13 @@ from .registry import (
     list_strategies,
     run_strategy,
 )
-from .validation import StrategyValidationError
+from .validation import (
+    StrategyValidationError,
+    run_strategy_checked,
+    validate_and_normalize_strategy_input,
+    validate_event_strategy_input,
+    validate_strategy_result,
+)
 from .selection import (
     EligibilityError,
     RebalanceScheduleError,
@@ -46,13 +55,20 @@ __all__ = [
     "StrategyDecision",
     "StrategyDefinition",
     "StrategyInput",
+    "StrategyHoldingState",
     "StrategyInputScope",
     "StrategyNotFoundError",
     "StrategyProtocol",
     "StrategyRegistry",
     "StrategyRunResult",
+    "StrategyPortfolioTarget",
+    "StrategyPortfolioTargetPosition",
     "StrategyType",
     "StrategyValidationError",
+    "run_strategy_checked",
+    "validate_and_normalize_strategy_input",
+    "validate_event_strategy_input",
+    "validate_strategy_result",
     "SystemBAuthorizationStrategy",
     "get_strategy",
     "list_strategies",

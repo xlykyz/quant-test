@@ -344,14 +344,18 @@ def run_event_drift_product_backtest(
         )
         strategy = get_strategy(request.strategy_code, request.strategy_version)
         from qrp_atlas.strategies.models import StrategyRunResult
+        from qrp_atlas.strategies.validation import validate_strategy_result
 
         # Empty EventFrame is a valid product outcome; do not force strategy
         # indicator attachment on a zero-row frame.
-        strategy_result = StrategyRunResult(
+        strategy_result = validate_strategy_result(
+            strategy.definition,
+            StrategyRunResult(
             definition=strategy.definition,
             parameters=resolved,
             decisions=(),
             diagnostics=("no_events_in_request_range", "cash_only_result"),
+            ),
         )
         run = StrategyPortfolioBacktestRun(
             strategy_result=strategy_result,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .models import StrategyInput, StrategyRunResult
 from .protocol import StrategyProtocol
-from .validation import validate_definition
+from .validation import run_strategy_checked, validate_definition
 
 
 class StrategyNotFoundError(KeyError):
@@ -57,7 +57,7 @@ class StrategyRegistry:
     def run(
         self, code: str, strategy_input: StrategyInput, version: str | None = None
     ) -> StrategyRunResult:
-        return self.get(code, version).run(strategy_input)
+        return run_strategy_checked(self.get(code, version), strategy_input)
 
 
 def _build_default_registry() -> StrategyRegistry:

@@ -14,6 +14,8 @@ from qrp_atlas.strategies import (
     StrategyInput,
     StrategyRunResult,
     get_strategy,
+    run_strategy_checked,
+    validate_event_strategy_input,
 )
 from qrp_atlas.strategies.validation import resolve_parameters
 
@@ -209,6 +211,55 @@ def strategy_decisions_to_target_weights(
     )
 
 
+def strategy_result_to_target_weights(
+    strategy_result: StrategyRunResult,
+    *,
+    max_positions: int,
+    max_weight_per_asset: float,
+    default_weight: float | None = None,
+    cash_buffer: float = 0.0,
+    emit_unchanged_snapshots: bool = False,
+) -> pd.DataFrame:
+    """Route a checked result to native full targets or the legacy adapter."""
+
+    if not strategy_result.portfolio_targets:
+        return strategy_decisions_to_target_weights(
+            strategy_result,
+            max_positions=max_positions,
+            max_weight_per_asset=max_weight_per_asset,
+            default_weight=default_weight,
+            cash_buffer=cash_buffer,
+            emit_unchanged_snapshots=emit_unchanged_snapshots,
+        )
+
+    rows: list[dict[str, Any]] = []
+    previously_held: set[str] = set()
+    for target in strategy_result.portfolio_targets:
+        positions = {position.asset_id: position for position in target.positions}
+        currently_held = {
+            asset_id
+            for asset_id, position in positions.items()
+            if float(position.target_weight) > 0.0
+        }
+        for asset_id in sorted(set(positions) | previously_held):
+            position = positions.get(asset_id)
+            rows.append(
+                {
+                    "trade_date": target.trade_date,
+                    "asset_id": asset_id,
+                    "target_weight": (
+                        float(position.target_weight) if position is not None else 0.0
+                    ),
+                    "priority": 0.0,
+                }
+            )
+        previously_held = currently_held
+    return pd.DataFrame(
+        rows,
+        columns=["trade_date", "asset_id", "target_weight", "priority"],
+    )
+
+
 def _group_decisions_by_date(decisions):
     current_date = None
     group = []
@@ -276,7 +327,8 @@ def run_strategy_portfolio_backtest(
     strategy = get_strategy(code, version)
     resolved_parameters = resolve_parameters(strategy.definition, parameters or {})
     prepared = prepare_strategy_data(price_df, strategy.definition, resolved_parameters)
-    strategy_result = strategy.run(
+    strategy_result = run_strategy_checked(
+        strategy,
         StrategyInput(
             prepared_data=prepared,
             parameters=resolved_parameters,
@@ -295,7 +347,7 @@ def run_strategy_portfolio_backtest(
             cash_buffer = float(resolved_parameters["cash_buffer"] or 0.0)
         except (TypeError, ValueError):
             cash_buffer = 0.0
-    target_weights = strategy_decisions_to_target_weights(
+    target_weights = strategy_result_to_target_weights(
         strategy_result,
         max_positions=config.max_positions,
         max_weight_per_asset=config.max_weight_per_asset,
@@ -368,7 +420,8 @@ def run_event_drift_portfolio_backtest(
     else:
         raise ValueError("trading_days is required when price_df has no trade_date column")
 
-    strategy_result = strategy.run(
+    strategy_result = run_strategy_checked(
+        strategy,
         StrategyInput(
             prepared_data=events.copy(),
             parameters=resolved_parameters,
@@ -379,9 +432,10 @@ def run_event_drift_portfolio_backtest(
                 # Single source of truth: portfolio config capacity.
                 "max_positions": int(config.max_positions),
             },
-        )
+        ),
+        input_normalizer=validate_event_strategy_input,
     )
-    target_weights = strategy_decisions_to_target_weights(
+    target_weights = strategy_result_to_target_weights(
         strategy_result,
         max_positions=config.max_positions,
         max_weight_per_asset=config.max_weight_per_asset,

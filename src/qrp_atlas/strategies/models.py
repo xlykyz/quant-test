@@ -33,6 +33,26 @@ class StrategyInputScope(str, Enum):
     MARKET = "MARKET"
 
 
+@dataclass(frozen=True)
+class StrategyHoldingState:
+    """Typed initial holding state available to a strategy invocation."""
+
+    asset_id: str
+    current_weight: float
+    entry_count: int
+    first_entry_date: str | None = None
+    last_entry_date: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "asset_id": self.asset_id,
+            "current_weight": self.current_weight,
+            "entry_count": self.entry_count,
+            "first_entry_date": self.first_entry_date,
+            "last_entry_date": self.last_entry_date,
+        }
+
+
 
 @dataclass(frozen=True)
 class ParameterSpec:
@@ -98,6 +118,8 @@ class StrategyInput:
     parameters: Mapping[str, Any] = field(default_factory=dict)
     initial_positions: Mapping[str, bool] = field(default_factory=dict)
     runtime_context: Mapping[str, Any] = field(default_factory=dict)
+    holdings: Mapping[str, StrategyHoldingState] = field(default_factory=dict)
+    holdings_as_of_date: str | None = None
 
 
 @dataclass(frozen=True)
@@ -155,6 +177,44 @@ class StrategyAuthorization:
 
 
 @dataclass(frozen=True)
+class StrategyPortfolioTargetPosition:
+    """One desired asset weight within a full portfolio target snapshot."""
+
+    asset_id: str
+    target_weight: float
+    reason_code: str | None = None
+    evidence: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "asset_id": self.asset_id,
+            "target_weight": self.target_weight,
+            "reason_code": self.reason_code,
+            "evidence": dict(self.evidence),
+        }
+
+
+@dataclass(frozen=True)
+class StrategyPortfolioTarget:
+    """A complete desired portfolio state for one strategy signal date."""
+
+    trade_date: str
+    strategy_code: str
+    strategy_version: str
+    positions: tuple[StrategyPortfolioTargetPosition, ...]
+    diagnostics: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "trade_date": self.trade_date,
+            "strategy_code": self.strategy_code,
+            "strategy_version": self.strategy_version,
+            "positions": [position.to_dict() for position in self.positions],
+            "diagnostics": list(self.diagnostics),
+        }
+
+
+@dataclass(frozen=True)
 class StrategyRunResult:
     """The complete deterministic output of a strategy invocation."""
 
@@ -163,6 +223,7 @@ class StrategyRunResult:
     decisions: tuple[StrategyDecision, ...] = ()
     diagnostics: tuple[str, ...] = ()
     authorizations: tuple[StrategyAuthorization, ...] = ()
+    portfolio_targets: tuple[StrategyPortfolioTarget, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -170,6 +231,6 @@ class StrategyRunResult:
             "parameters": dict(self.parameters),
             "decisions": [decision.to_dict() for decision in self.decisions],
             "authorizations": [authorization.to_dict() for authorization in self.authorizations],
+            "portfolio_targets": [target.to_dict() for target in self.portfolio_targets],
             "diagnostics": list(self.diagnostics),
         }
-

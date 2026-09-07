@@ -14,7 +14,7 @@ from qrp_atlas.backtest.portfolio import (
     PortfolioBacktestEngine,
     PortfolioBacktestResult,
     PortfolioExecutionRule,
-    strategy_decisions_to_target_weights,
+    strategy_result_to_target_weights,
 )
 from qrp_atlas.backtest.product.timing import (
     REASON_NO_EXECUTION_DATE_IN_RANGE,
@@ -38,7 +38,12 @@ from qrp_atlas.indicators.stock.residual import (
     ResidualIndicatorError,
     calculate_market_residuals,
 )
-from qrp_atlas.strategies import StrategyInput, StrategyRunResult, get_strategy
+from qrp_atlas.strategies import (
+    StrategyInput,
+    StrategyRunResult,
+    get_strategy,
+    run_strategy_checked,
+)
 from qrp_atlas.strategies.builtin.residual import (
     STRATEGY_CODE,
     STRATEGY_VERSION,
@@ -333,7 +338,8 @@ def run_market_residual_mean_reversion_backtest(
     if prepared.empty:
         raise ResidualResearchError("no residual rows inside the requested date range")
 
-    strategy_result = strategy.run(
+    strategy_result = run_strategy_checked(
+        strategy,
         StrategyInput(
             prepared_data=prepared,
             parameters=resolved,
@@ -344,7 +350,7 @@ def run_market_residual_mean_reversion_backtest(
         )
     )
 
-    signal_targets = strategy_decisions_to_target_weights(
+    signal_targets = strategy_result_to_target_weights(
         strategy_result,
         max_positions=config.max_positions,
         max_weight_per_asset=config.max_weight_per_asset,
