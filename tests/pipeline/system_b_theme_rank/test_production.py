@@ -21,12 +21,17 @@ from qrp_atlas.contracts import (
     THEME_CUSTOM_INDEX_DAILY_TABLE,
     THEME_CUSTOM_INDEX_EPISODE_TABLE,
     THEME_CUSTOM_INDEX_STATE_TABLE,
+    THEME_ID,
     THEME_M4_OBSERVATION_TABLE,
     THEME_M5_OBSERVATION_TABLE,
     THEME_M5_OBSERVATION_VERSION,
+    THEME_RANK,
     THEME_RANK_ELIGIBLE,
+    THEME_RANK_NO_EFFECTIVE_MEMBERS,
     THEME_RANK_NO_OPEN_EPISODE,
     THEME_RANK_NOT_ELIGIBLE,
+    THEME_RANK_OK,
+    THEME_SCORE,
     THEME_STATUS,
     THS_HOT,
     TRADING_CALENDAR,
@@ -562,4 +567,285 @@ def test_snapshot_input_provenance_full_rc2_coverage(tmp_path: Path) -> None:
     assert "effective_weights" in prov
     assert set(prov["effective_weights"].keys()) == set(expected_leaves.keys())
     assert sum(prov["base_weights"].values()) == pytest.approx(1.0)
+
+
+def test_path_b_zero_member_canonical_theme_materializes_not_eligible_without_affecting_eligible_ranks(tmp_path: Path) -> None:
+    """Test that zero-member Theme in Path B is valid M5, materializes as NO_EFFECTIVE_MEMBERS, and does not alter normal Theme ranking."""
+    db_path = tmp_path / "quant.duckdb"
+    con = duckdb.connect(str(db_path))
+    init_database(con)
+
+    days = list(pd.bdate_range("2026-08-03", periods=15).date)
+    con.executemany(
+        f"INSERT INTO {TRADING_CALENDAR.name} (trade_date, is_open) VALUES (?, true)",
+        [(d,) for d in days],
+    )
+    con.execute("INSERT INTO stock_info (ticker, name, list_date) VALUES ('000001.SZ', 'Stock1', '2020-01-01')")
+    con.execute("INSERT INTO stock_info (ticker, name, list_date) VALUES ('000002.SZ', 'Stock2', '2020-01-01')")
+
+    service = StockCollectionService(
+        con,
+        clock=lambda: datetime.combine(days[0] - timedelta(days=3), datetime.min.time(), UTC),
+    )
+    # Theme 1: Eligible
+    t1, c1 = service.create_canonical_theme(
+        theme_name="THEME_1",
+        source_key="THEME_1",
+        effective_from=days[0],
+        available_trade_date=days[0],
+    )
+    service.add_member(
+        theme_id=t1.theme_id,
+        collection_id=c1.collection_id,
+        asset_id="000001.SZ",
+        effective_from=days[0],
+        available_trade_date=days[0],
+    )
+
+    # Theme 2: Eligible
+    t2, c2 = service.create_canonical_theme(
+        theme_name="THEME_2",
+        source_key="THEME_2",
+        effective_from=days[0],
+        available_trade_date=days[0],
+    )
+    service.add_member(
+        theme_id=t2.theme_id,
+        collection_id=c2.collection_id,
+        asset_id="000002.SZ",
+        effective_from=days[0],
+        available_trade_date=days[0],
+    )
+
+    # Theme 3: Zero-member canonical theme
+    t3, c3 = service.create_canonical_theme(
+        theme_name="THEME_ZERO",
+        source_key="THEME_ZERO",
+        effective_from=days[0],
+        available_trade_date=days[0],
+    )
+    # Note: no members added to t3 / c3!
+
+    target = days[9]  # 2026-08-14
+    start_d = days[5]  # 2026-08-10
+    end_future = days[12]  # 2026-08-19
+
+    # Episodes for Theme 1 and Theme 2
+    for ep_id, tid, cid in (("EP:1", t1.theme_id, c1.collection_id), ("EP:2", t2.theme_id, c2.collection_id)):
+        con.execute(
+            f"""
+            INSERT INTO {THEME_CUSTOM_INDEX_EPISODE_TABLE}
+            (episode_id, theme_id, collection_id, episode_no, episode_start_date, episode_confirmed_date, episode_end_date, ma5_reentry_count, episode_return, rule_version, production_run_id, input_snapshot_id, created_at)
+            VALUES (?, ?, ?, 1, ?, ?, ?, 0, 0.0, 'v1', 'run1', 'snap1', TIMESTAMP '2026-08-14 10:00:00')
+            """,
+            [ep_id, tid, cid, start_d, days[6], end_future],
+        )
+
+    # Custom index daily & state for Theme 1 (start 1000, target 1100) and Theme 2 (start 1000, target 1200)
+    for tid, cid, t_ret, d_lvl in ((t1.theme_id, c1.collection_id, 0.01, 1100.0), (t2.theme_id, c2.collection_id, 0.02, 1200.0)):
+        con.execute(
+            f"""
+            INSERT INTO {THEME_CUSTOM_INDEX_DAILY_TABLE}
+            (theme_id, collection_id, trade_date, theme_daily_return, index_level, base_level, effective_member_count, total_member_count, calculation_version, production_run_id, input_snapshot_id, created_at)
+            VALUES (?, ?, ?, 0.0, 1000.0, 1000.0, 1, 1, 'v1', 'run1', 'snap1', TIMESTAMP '2026-08-14 10:00:00')
+            """,
+            [tid, cid, start_d],
+        )
+        con.execute(
+            f"""
+            INSERT INTO {THEME_CUSTOM_INDEX_DAILY_TABLE}
+            (theme_id, collection_id, trade_date, theme_daily_return, index_level, base_level, effective_member_count, total_member_count, calculation_version, production_run_id, input_snapshot_id, created_at)
+            VALUES (?, ?, ?, ?, ?, 1000.0, 1, 1, 'v1', 'run1', 'snap1', TIMESTAMP '2026-08-14 10:00:00')
+            """,
+            [tid, cid, target, t_ret, d_lvl],
+        )
+        # States for all days in episode history [start_d .. target]
+        for d in days[5:10]:
+            con.execute(
+                f"""
+                INSERT INTO {THEME_CUSTOM_INDEX_STATE_TABLE}
+                (theme_id, collection_id, trade_date, is_above_or_equal_ma5, rule_version, production_run_id, input_snapshot_id, created_at)
+                VALUES (?, ?, ?, true, 'v1', 'run1', 'snap1', TIMESTAMP '2026-08-14 10:00:00')
+                """,
+                [tid, cid, d],
+            )
+
+    # M4 observations for all 3 themes
+    con.execute(
+        f"""
+        INSERT INTO {THEME_M4_OBSERVATION_TABLE}
+        (theme_id, collection_id, trade_date, theme_daily_return, theme_limit_up_count, theme_return_rank, effective_member_count, total_member_count, comparison_universe_size, comparison_universe_version, custom_index_trend_state, custom_index_trend_run_days, custom_index_episode_id, qualification_status, calculation_version, production_run_id, input_snapshot_id, created_at)
+        VALUES (?, ?, ?, 0.01, 0, 2, 1, 1, 2, 'v1', 'BREAK', 0, 'EP:1', 'QUALIFIED', 'v1', 'run1', 'snap1', TIMESTAMP '2026-08-14 10:00:00')
+        """,
+        [t1.theme_id, c1.collection_id, target],
+    )
+    con.execute(
+        f"""
+        INSERT INTO {THEME_M4_OBSERVATION_TABLE}
+        (theme_id, collection_id, trade_date, theme_daily_return, theme_limit_up_count, theme_return_rank, effective_member_count, total_member_count, comparison_universe_size, comparison_universe_version, custom_index_trend_state, custom_index_trend_run_days, custom_index_episode_id, qualification_status, calculation_version, production_run_id, input_snapshot_id, created_at)
+        VALUES (?, ?, ?, 0.02, 0, 1, 1, 1, 2, 'v1', 'BREAK', 0, 'EP:2', 'QUALIFIED', 'v1', 'run1', 'snap1', TIMESTAMP '2026-08-14 10:00:00')
+        """,
+        [t2.theme_id, c2.collection_id, target],
+    )
+    con.execute(
+        f"""
+        INSERT INTO {THEME_M4_OBSERVATION_TABLE}
+        (theme_id, collection_id, trade_date, theme_daily_return, theme_limit_up_count, theme_return_rank, effective_member_count, total_member_count, comparison_universe_size, comparison_universe_version, custom_index_trend_state, custom_index_trend_run_days, custom_index_episode_id, qualification_status, calculation_version, production_run_id, input_snapshot_id, created_at)
+        VALUES (?, ?, ?, 0.0, 0, NULL, 0, 0, 2, 'v1', 'BREAK', 0, NULL, 'DISQUALIFIED', 'v1', 'run1', 'snap1', TIMESTAMP '2026-08-14 10:00:00')
+        """,
+        [t3.theme_id, c3.collection_id, target],
+    )
+
+    # Popularity availability (both AVAILABLE, 1 snapshot)
+    for src in ("dc_hot", "ths_hot"):
+        con.execute(
+            f"""
+            INSERT INTO {POPULARITY_SOURCE_AVAILABILITY.name}
+            (trade_date, source, source_status, valid_snapshot_count, snapshot_seqs, input_version, source_provenance, source_pipeline_run_id, created_at)
+            VALUES (?, ?, 'AVAILABLE', 1, '[1]', 'v1', '{{}}', 'run1', TIMESTAMP '2026-08-14 10:00:00')
+            """,
+            [target, src],
+        )
+
+    # Popularity tables
+    dc_frame = _popularity_frame(DC_HOT, target, ["000001.SZ", "000002.SZ"])
+    ths_frame = _popularity_frame(THS_HOT, target, [])
+    cols_dc = ", ".join(dc_frame.columns)
+    con.register("_dc_import", dc_frame)
+    con.execute(f"INSERT INTO {DC_HOT.name} ({cols_dc}) SELECT {cols_dc} FROM _dc_import")
+    cols_ths = ", ".join(ths_frame.columns)
+    con.register("_ths_import", ths_frame)
+    con.execute(f"INSERT INTO {THS_HOT.name} ({cols_ths}) SELECT {cols_ths} FROM _ths_import")
+
+    # M5 facts via service
+    m5_facts = ThemeM5PipelineService(con).calculate_m5_facts(target)
+    t3_m5 = m5_facts.observations[m5_facts.observations[THEME_ID] == t3.theme_id].iloc[0]
+    assert t3_m5["theme_member_count"] == 0
+    assert t3_m5["theme_hot_stock_count"] == 0
+    assert t3_m5["theme_hot_list_appearance_count"] == 0
+    assert t3_m5["theme_hot_source_count"] == 0
+    assert pd.isna(t3_m5["theme_hot_stock_ratio"]) or t3_m5["theme_hot_stock_ratio"] is None
+
+    true_obs = m5_facts.observations.copy()
+    true_obs[CALCULATION_VERSION] = THEME_M5_OBSERVATION_VERSION
+    true_obs[PRODUCTION_RUN_ID] = "m5_run_1"
+    true_obs[INPUT_SNAPSHOT_ID] = m5_facts.input_snapshot_id
+    true_obs[CREATED_AT] = datetime.combine(target, datetime.min.time(), UTC)
+    con.register("_m5_import", true_obs)
+    cols_m5 = ", ".join(true_obs.columns)
+    con.execute(f"INSERT INTO {THEME_M5_OBSERVATION_TABLE} ({cols_m5}) SELECT {cols_m5} FROM _m5_import")
+    con.close()
+
+    # 1. Run Theme Rank daily
+    report = run_theme_rank_daily(quant_database=db_path, trade_date=target, production_run_id="run_zero_mem")
+    assert report["status"] == "COMPLETED"
+
+    # 2. Check Snapshot
+    snap = get_theme_rank_snapshot(db_path, target)
+    assert len(snap) == 3  # All 3 canonical themes in C_D
+
+    # Zero member theme
+    zero_row = snap[snap[THEME_ID] == t3.theme_id].iloc[0]
+    assert zero_row[RANK_ELIGIBLE] == False
+    assert zero_row[RANK_ELIGIBILITY_REASON] == THEME_RANK_NO_EFFECTIVE_MEMBERS
+    assert zero_row[THEME_STATUS] == THEME_RANK_NOT_ELIGIBLE
+    assert pd.isna(zero_row[THEME_RANK])
+    assert pd.isna(zero_row[THEME_SCORE])
+
+    # Eligible themes
+    t1_row = snap[snap[THEME_ID] == t1.theme_id].iloc[0]
+    t2_row = snap[snap[THEME_ID] == t2.theme_id].iloc[0]
+    assert t1_row[RANK_ELIGIBLE] == True
+    assert t1_row[RANK_ELIGIBILITY_REASON] == THEME_RANK_ELIGIBLE
+    assert t1_row[THEME_STATUS] == THEME_RANK_OK
+
+    assert t2_row[RANK_ELIGIBLE] == True
+    assert t2_row[RANK_ELIGIBILITY_REASON] == THEME_RANK_ELIGIBLE
+    assert t2_row[THEME_STATUS] == THEME_RANK_OK
+
+    # T2 had episode return (1200/1000 - 1 = 0.20) > T1 (1100/1000 - 1 = 0.10) and daily return 0.02 > 0.01
+    assert t2_row[THEME_RANK] == 1.0
+    assert t1_row[THEME_RANK] == 2.0
+    assert t2_row[THEME_SCORE] > t1_row[THEME_SCORE]
+
+    # 3. Component audit: exactly |U_D| * 7 = 2 * 7 = 14 rows, zero member theme not present
+    audit = get_theme_rank_component_audit(db_path, target)
+    assert len(audit) == 14
+    assert set(audit[THEME_ID].unique()) == {t1.theme_id, t2.theme_id}
+    assert t3.theme_id not in audit[THEME_ID].values
+
+
+def test_path_b_zero_member_invalid_arithmetic_fails_fast(tmp_path: Path) -> None:
+    """Test that zero-member Theme with non-zero hot facts or non-null ratio in M5 fails-fast."""
+    db_path = tmp_path / "quant.duckdb"
+    con = duckdb.connect(str(db_path))
+    init_database(con)
+
+    days = list(pd.bdate_range("2026-08-03", periods=15).date)
+    con.executemany(
+        f"INSERT INTO {TRADING_CALENDAR.name} (trade_date, is_open) VALUES (?, true)",
+        [(d,) for d in days],
+    )
+    service = StockCollectionService(
+        con,
+        clock=lambda: datetime.combine(days[0] - timedelta(days=3), datetime.min.time(), UTC),
+    )
+    t1, c1 = service.create_canonical_theme(
+        theme_name="ZERO_THEME",
+        source_key="ZERO_THEME",
+        effective_from=days[0],
+        available_trade_date=days[0],
+    )
+    target = days[5]
+    # M4
+    con.execute(
+        f"""
+        INSERT INTO {THEME_M4_OBSERVATION_TABLE}
+        (theme_id, collection_id, trade_date, theme_daily_return, theme_limit_up_count, theme_return_rank, effective_member_count, total_member_count, comparison_universe_size, comparison_universe_version, custom_index_trend_state, custom_index_trend_run_days, custom_index_episode_id, qualification_status, calculation_version, production_run_id, input_snapshot_id, created_at)
+        VALUES (?, ?, ?, 0.0, 0, NULL, 0, 0, 1, 'v1', 'BREAK', 0, NULL, 'DISQUALIFIED', 'v1', 'run1', 'snap1', TIMESTAMP '2026-08-10 10:00:00')
+        """,
+        [t1.theme_id, c1.collection_id, target],
+    )
+    for src in ("dc_hot", "ths_hot"):
+        con.execute(
+            f"""
+            INSERT INTO {POPULARITY_SOURCE_AVAILABILITY.name}
+            (trade_date, source, source_status, valid_snapshot_count, snapshot_seqs, input_version, source_provenance, source_pipeline_run_id, created_at)
+            VALUES (?, ?, 'AVAILABLE', 1, '[1]', 'v1', '{{}}', 'run1', TIMESTAMP '2026-08-10 10:00:00')
+            """,
+            [target, src],
+        )
+    dc_frame = _popularity_frame(DC_HOT, target, [])
+    ths_frame = _popularity_frame(THS_HOT, target, [])
+    cols_dc = ", ".join(dc_frame.columns)
+    con.register("_dc_import", dc_frame)
+    con.execute(f"INSERT INTO {DC_HOT.name} ({cols_dc}) SELECT {cols_dc} FROM _dc_import")
+    cols_ths = ", ".join(ths_frame.columns)
+    con.register("_ths_import", ths_frame)
+    con.execute(f"INSERT INTO {THS_HOT.name} ({cols_ths}) SELECT {cols_ths} FROM _ths_import")
+
+    m5_facts = ThemeM5PipelineService(con).calculate_m5_facts(target)
+
+    # Corrupted M5: zero member but hot_stock_count = 1
+    m5_corrupt = pd.DataFrame([{
+        "theme_id": t1.theme_id,
+        "collection_id": c1.collection_id,
+        "trade_date": target,
+        "theme_member_count": 0,
+        "theme_hot_stock_count": 1,
+        "theme_hot_stock_ratio": None,
+        "theme_hot_list_appearance_count": 1,
+        "theme_hot_source_count": 1,
+        "calculation_version": THEME_M5_OBSERVATION_VERSION,
+        "production_run_id": "m5_run_1",
+        "input_snapshot_id": m5_facts.input_snapshot_id,
+        "created_at": datetime.combine(target, datetime.min.time(), UTC),
+    }])
+    con.register("_m5_import", m5_corrupt)
+    cols = ", ".join(m5_corrupt.columns)
+    con.execute(f"INSERT INTO {THEME_M5_OBSERVATION_TABLE} ({cols}) SELECT {cols} FROM _m5_import")
+    con.close()
+
+    with pytest.raises(SystemBThemeRankProductionError, match="THEME_M5_ARITHMETIC_INCONSISTENT"):
+        run_theme_rank_daily(quant_database=db_path, trade_date=target, production_run_id="run_fail")
 

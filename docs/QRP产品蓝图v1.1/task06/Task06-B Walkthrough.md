@@ -44,7 +44,7 @@ Theme Rank Snapshot + Component Audit (Atomic Replace)
 | :--- | :--- | :---: | :---: | :--- |
 | **Momentum** (45%) | `episode_return` | 35% | 升序 (ASC) | D 动态对齐收益率 $P(D) / P(\text{start}) - 1$，严禁读取 D 之后的终结收益；点位非法直接 fail-fast |
 | | `theme_daily_return` | 10% | 升序 (ASC) | M4 当日板块即时收益率，只表达 D 日即时强化，不支配中期趋势语义 |
-| **Persistence** (35%) | `episode_duration` | 15% | 降序 (DESC) | 从 `episode_confirmed_date` 到 $D$（含首尾）的实际开市交易日数（负向指标，时间越短相对排名越高） |
+| **Persistence** (35%) | `episode_duration` | 15% | 升序 (ASC) | 从 `episode_confirmed_date` 到 $D$（含首尾）的实际开市交易日数（higher-is-better 正向指标，持续越久越强） |
 | | `episode_above_ma5_ratio` | 20% | 升序 (ASC) | `start_date` 到 $D$ 的有效状态日中处于 MA5 之上的比例；保留合法 NULL 并剔除出分母，缺行或有效日为 0 fail-fast |
 | **Structure** (10%) | `limit_up_diffusion` | 10% | 升序 (ASC) | 涨停扩散度 $theme\_limit\_up\_count / effective\_member\_count$；$U_D$ 保证分母 > 0，严禁用裸涨停家数 |
 | **Popularity** (10%) | `hot_stock_ratio` | 6% | 升序 (ASC) | M5 当日热股占比 $theme\_hot\_stock\_count / theme\_member\_count$；保留 M5 的 PIT Theme 成员分母 |
@@ -81,8 +81,8 @@ Theme Rank Snapshot + Component Audit (Atomic Replace)
 
 ### 4.1 流水线契约与依赖关系
 - **流水线 ID**：`system_b_theme_rank_daily`
-- **正式依赖**：`dependencies = ("theme_m4_production",)`
-- **解耦设计**：`theme_m5_production = SUCCESS` **不是**流水线的静态硬依赖。
+- **正式依赖**：与生产契约严格对齐，`dependencies = ("theme_m4_production", "dc_hot_ingest", "ths_hot_ingest")`
+- **解耦设计**：明确没有 `theme_m5_production` 无条件硬依赖（`theme_m5_production` 不是静态 DAG 前置，而是在运行时 Path B 触发时作为条件化强一致性校验门禁）。
 
 ### 4.2 Path A vs Path B 执行逻辑
 - **Path A（可信不可用）**：

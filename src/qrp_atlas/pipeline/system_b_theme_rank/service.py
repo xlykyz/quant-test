@@ -343,48 +343,70 @@ def run_theme_rank_daily(
                 tid = str(row[THEME_ID])
                 mem_cnt = int(row["theme_member_count"])
                 hot_cnt = int(row["theme_hot_stock_count"])
-                hot_ratio = float(row["theme_hot_stock_ratio"])
                 app_cnt = int(row["theme_hot_list_appearance_count"])
                 src_cnt = int(row["theme_hot_source_count"])
+                raw_ratio = row["theme_hot_stock_ratio"]
 
-                if mem_cnt <= 0:
+                if mem_cnt < 0:
                     raise SystemBThemeRankProductionError(
                         "THEME_M5_ARITHMETIC_INCONSISTENT",
-                        f"theme {tid} theme_member_count {mem_cnt} <= 0",
+                        f"theme {tid} theme_member_count {mem_cnt} < 0",
                     )
-                if hot_cnt < 0 or hot_cnt > mem_cnt:
-                    raise SystemBThemeRankProductionError(
-                        "THEME_M5_ARITHMETIC_INCONSISTENT",
-                        f"theme {tid} theme_hot_stock_count {hot_cnt} invalid for member count {mem_cnt}",
-                    )
-                expected_ratio = hot_cnt / mem_cnt
-                if abs(hot_ratio - expected_ratio) > 1e-6 or not (0.0 <= hot_ratio <= 1.0):
-                    raise SystemBThemeRankProductionError(
-                        "THEME_M5_ARITHMETIC_INCONSISTENT",
-                        f"theme {tid} hot_stock_ratio {hot_ratio} != {expected_ratio}",
-                    )
-                if hot_cnt == 0:
-                    if app_cnt != 0:
+                if mem_cnt == 0:
+                    # Legal M5 fact for zero-member themes:
+                    # hot_stock_count / appearance_count / source_count must all be 0,
+                    # and theme_hot_stock_ratio must be NULL
+                    if hot_cnt != 0 or app_cnt != 0 or src_cnt != 0:
                         raise SystemBThemeRankProductionError(
                             "THEME_M5_ARITHMETIC_INCONSISTENT",
-                            f"theme {tid} appearance count {app_cnt} > 0 while hot stock count is 0",
+                            f"theme {tid} zero-member theme has non-zero hot facts: "
+                            f"hot_stock_count={hot_cnt}, appearance_count={app_cnt}, source_count={src_cnt}",
                         )
-                    if src_cnt != 0:
+                    if not pd.isna(raw_ratio) and raw_ratio is not None:
                         raise SystemBThemeRankProductionError(
                             "THEME_M5_ARITHMETIC_INCONSISTENT",
-                            f"theme {tid} hot source count {src_cnt} != 0 while hot stock count is 0",
+                            f"theme {tid} zero-member theme must have NULL hot_stock_ratio, got {raw_ratio}",
                         )
                 else:
-                    if app_cnt < hot_cnt:
+                    if pd.isna(raw_ratio) or raw_ratio is None:
                         raise SystemBThemeRankProductionError(
                             "THEME_M5_ARITHMETIC_INCONSISTENT",
-                            f"theme {tid} appearance count {app_cnt} < hot stock count {hot_cnt}",
+                            f"theme {tid} member_count {mem_cnt} > 0 has NULL hot_stock_ratio",
                         )
-                    if not (1 <= src_cnt <= 2):
+                    hot_ratio = float(raw_ratio)
+                    if hot_cnt < 0 or hot_cnt > mem_cnt:
                         raise SystemBThemeRankProductionError(
                             "THEME_M5_ARITHMETIC_INCONSISTENT",
-                            f"theme {tid} hot source count {src_cnt} not in [1, 2]",
+                            f"theme {tid} theme_hot_stock_count {hot_cnt} invalid for member count {mem_cnt}",
                         )
+                    expected_ratio = hot_cnt / mem_cnt
+                    if abs(hot_ratio - expected_ratio) > 1e-6 or not (0.0 <= hot_ratio <= 1.0):
+                        raise SystemBThemeRankProductionError(
+                            "THEME_M5_ARITHMETIC_INCONSISTENT",
+                            f"theme {tid} hot_stock_ratio {hot_ratio} != {expected_ratio}",
+                        )
+                    if hot_cnt == 0:
+                        if app_cnt != 0:
+                            raise SystemBThemeRankProductionError(
+                                "THEME_M5_ARITHMETIC_INCONSISTENT",
+                                f"theme {tid} appearance count {app_cnt} > 0 while hot stock count is 0",
+                            )
+                        if src_cnt != 0:
+                            raise SystemBThemeRankProductionError(
+                                "THEME_M5_ARITHMETIC_INCONSISTENT",
+                                f"theme {tid} hot source count {src_cnt} != 0 while hot stock count is 0",
+                            )
+                    else:
+                        if app_cnt < hot_cnt:
+                            raise SystemBThemeRankProductionError(
+                                "THEME_M5_ARITHMETIC_INCONSISTENT",
+                                f"theme {tid} appearance count {app_cnt} < hot stock count {hot_cnt}",
+                            )
+                        if not (1 <= src_cnt <= 2):
+                            raise SystemBThemeRankProductionError(
+                                "THEME_M5_ARITHMETIC_INCONSISTENT",
+                                f"theme {tid} hot source count {src_cnt} not in [1, 2]",
+                            )
 
             # 2. Align persisted M5 business outputs with fresh_m5_facts.observations
             fresh_obs = fresh_m5_facts.observations
@@ -410,13 +432,23 @@ def run_theme_rank_daily(
                             "THEME_M5_BUSINESS_OUTPUT_MISMATCH",
                             f"theme {tid} field {field} persisted {p_row[field]} != fresh {f_row[field]}",
                         )
-                p_ratio = float(p_row["theme_hot_stock_ratio"])
-                f_ratio = float(f_row["theme_hot_stock_ratio"])
-                if abs(p_ratio - f_ratio) > 1e-6:
+                p_ratio_val = p_row["theme_hot_stock_ratio"]
+                f_ratio_val = f_row["theme_hot_stock_ratio"]
+                p_is_null = pd.isna(p_ratio_val) or p_ratio_val is None
+                f_is_null = pd.isna(f_ratio_val) or f_ratio_val is None
+                if p_is_null != f_is_null:
                     raise SystemBThemeRankProductionError(
                         "THEME_M5_BUSINESS_OUTPUT_MISMATCH",
-                        f"theme {tid} hot_stock_ratio persisted {p_ratio} != fresh {f_ratio}",
+                        f"theme {tid} hot_stock_ratio nullability mismatch: persisted null={p_is_null}, fresh null={f_is_null}",
                     )
+                if not p_is_null:
+                    p_ratio = float(p_ratio_val)
+                    f_ratio = float(f_ratio_val)
+                    if abs(p_ratio - f_ratio) > 1e-6:
+                        raise SystemBThemeRankProductionError(
+                            "THEME_M5_BUSINESS_OUTPUT_MISMATCH",
+                            f"theme {tid} hot_stock_ratio persisted {p_ratio} != fresh {f_ratio}",
+                        )
 
             # 3. Derive snapshot count/seq from fresh DC/THS rows and verify against availability
             for src_key, raw_df in (
