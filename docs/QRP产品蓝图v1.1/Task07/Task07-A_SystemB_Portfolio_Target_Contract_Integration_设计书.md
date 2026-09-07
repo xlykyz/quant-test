@@ -1,18 +1,20 @@
 # Task07-A — System B Portfolio Target Contract Integration 设计书
 
-> 状态：DESIGN REVISION 1 / 待二次对抗审计
+> 状态：DESIGN REVISION 2 / 待三次对抗审计
 >
 > 分支基线：`develop/v1.1`
 >
 > 任务身份：Task07 的薄 enabling work package。Task07 仍以 **System B 业务闭环** 为唯一主目标；本任务只补齐 System B 为输出完整目标组合而实际暴露出的最小 QRP Common 能力缺口。
 >
-> Revision 1：吸收首轮对抗审计 `NEEDS_REVISION` 结论，冻结完整快照、统一结果校验、native target 唯一转换入口、holdings as-of 语义、legacy runtime fail-closed 与 deterministic serialization 等合同语义；不扩大 Task07-A 产品范围。
+> Revision 1：冻结 full snapshot、统一 result validation、native target 唯一路由、holdings as-of、legacy runtime fail-fast 与 deterministic serialization。
+>
+> Revision 2：吸收第二轮审计 `NEEDS_REVISION` 的两个 MAJOR，进一步冻结 **统一 checked strategy runner（input validate → run → result validate）** 与 **canonical StrategyRunResult 写入既有 reproducibility snapshot**；不新增数据库 schema、不改造 Account/Execution、不扩大 Task07-A 产品范围。
 
 ---
 
 ## 1. 背景与任务定位
 
-QRP v1.1 当前核心链路已经收敛为：
+QRP v1.1 当前核心链路：
 
 ```text
 pipeline
@@ -24,7 +26,7 @@ pipeline
 → production run / replay / result
 ```
 
-Task05 已完成 System B 新增仓授权结果的正式挂载；Task06 已完成 Asset Rank 与 Theme Rank。进入 Task07 后，System B 首次需要把市场判断、横截面排名、当前持仓状态与组合规则汇合成一个**完整目标组合**。
+Task05 已完成 System B 新增仓授权结果正式挂载；Task06 已完成 Asset Rank 与 Theme Rank。Task07 首次需要把市场判断、横截面排名、当前持仓状态与组合规则汇合成一个**完整目标组合**。
 
 现有 Strategy Framework 已具备：
 
@@ -36,23 +38,23 @@ Task05 已完成 System B 新增仓授权结果的正式挂载；Task06 已完�
 - `StrategyRunResult`；
 - declarative strategy；
 - strategy catalog / product backtest；
-- `StrategyDecision -> target_weights -> PortfolioBacktestEngine` 的通用适配链。
+- `StrategyDecision -> target_weights -> PortfolioBacktestEngine` 通用适配链。
 
-但对于 System B 这类复杂策略，当前仍存在关键断点：
+但 System B 这类复杂策略存在关键断点：
 
 ```text
 StrategyRunResult
   ├─ decisions
   └─ authorizations
 
-        ↓  缺少策略原生、typed、完整的 portfolio target 结果
+        ↓ 缺少策略原生、typed、完整 portfolio target
 
 Portfolio / Backtest
 ```
 
-简单 ENTER/HOLD/EXIT 策略可以由下游 Adapter 推导 target；System B 的最终组合包含持仓生命周期、加仓次数、容量竞争、权重约束等业务语义，因此 **Portfolio Target 本身属于 System B 策略结果的一部分**，不能依赖通用 Adapter 在策略外部猜测。
+简单 ENTER/HOLD/EXIT 策略可以由下游 Adapter 推导 target；System B 最终组合包含持仓生命周期、加仓次数、容量竞争、权重约束等业务语义，因此 **Portfolio Target 本身属于 System B 策略结果的一部分**，不能依赖通用 Adapter 在策略外部猜测。
 
-Task07-A 的作用仅是为后续 Task07-B / 07-C 提供最小、稳定的输入输出边界。
+Task07-A 只负责为 07-B / 07-C 提供最小、稳定的输入输出边界。
 
 ---
 
@@ -64,7 +66,7 @@ Task07-A 的作用仅是为后续 Task07-B / 07-C 提供最小、稳定的输入
 
 该原则对 Task07-A / B / C 全部生效。
 
-### 2.2 “被动补齐 Common”，不是“主动建设平台”
+### 2.2 Common 只能被动补齐
 
 正确顺序：
 
@@ -75,12 +77,12 @@ System B 业务需求
 → 返回 System B 主线
 ```
 
-禁止顺序：
+禁止：
 
 ```text
-发现一个抽象机会
-→ 先设计 Strategy Framework v2
-→ 扩建 plugin / external / account / OMS 等能力
+发现抽象机会
+→ Strategy Framework v2
+→ plugin / external / account / OMS 扩建
 → 再回来实现 System B
 ```
 
@@ -89,38 +91,36 @@ System B 业务需求
 任何 Common 扩展必须同时满足：
 
 1. **最小**：只覆盖 Task07 已真实需要的语义；
-2. **通用**：命名与类型不得硬编码 System B 业务知识；
-3. **向后兼容**：现有 built-in / declarative strategy、现有 `StrategyDecision` 与现有回测产品路径默认不受破坏。
+2. **通用**：类型/命名不得硬编码 System B 业务知识；
+3. **向后兼容**：现有 built-in、declarative strategy、`StrategyDecision` 与既有产品回测路径默认行为不变。
 
-### 2.4 策略语义与执行语义严格分层
+### 2.4 Strategy 与 Execution 严格分层
 
-Task07 的稳定边界停在：
+Task07 稳定边界停在：
 
 ```text
 strategy result / desired portfolio target
 ```
 
-不得重新把已退出 v1.1 Core 的 Execution / OMS / broker order planning 拉回 Task07。
-
-通用 Portfolio / Backtest 负责模拟或解析：
-
-- T+1；
-- 停牌；
-- 涨跌停；
-- 整数手；
-- 成交成本；
-- 现实成交失败；
-- 价格相关现金可实现性；
-- 持仓资金变化。
-
-System B 策略负责：
+System B strategy 负责：
 
 - 谁应该持有；
 - 是否继续持有；
 - 是否退出；
 - 是否允许新增 / 加仓；
 - 组合容量竞争；
-- 业务目标权重 / 目标状态。
+- desired business target weight / state。
+
+Portfolio / Backtest 负责：
+
+- T+1；
+- 停牌；
+- 涨跌停；
+- 整数手；
+- 价格相关现金可实现性；
+- 成交成本；
+- 现实成交失败；
+- realized holdings / capital changes。
 
 **通用 Portfolio Engine 不得包含 System B、Theme Rank、Asset Rank、MA5 两日退出、第二次加仓等业务知识。**
 
@@ -143,73 +143,29 @@ System B 策略负责：
      决定“约束后最终持有什么”
 ```
 
-Task07-A 是薄 enabling task，不承担完整组合业务规则实现。
+07-A 是薄 enabling task；07-B / 07-C 才是 System B 业务核心。
 
 ---
 
 ## 4. Task07-A 目标
 
-Task07-A 仅完成：
+Task07-A 只完成：
 
-1. 给 QRP Strategy Result 增加可表达**完整目标组合**的 typed contract；
-2. 给后续 System B 07-B / 07-C 提供**最小 typed initial holding state**；
-3. 建立 `StrategyRunResult -> portfolio target frame` 的唯一 Common 路由，避免 native target 与 legacy decisions 双 SSOT；
-4. 建立统一 `validate_strategy_result()` fail-closed 边界；
-5. 保持现有简单策略、declarative strategy 与旧 decisions 路径默认行为不变；
-6. 不提前实现 System B entry / hold / exit / sizing / constraint policy；
-7. 不为了 seeded holdings 改造现有 PortfolioBacktestEngine / Account 模型。
-
-Task07-A 完成后，后续 System B 策略可以在统一 `StrategyRunResult` 中原生返回完整 Portfolio Target。
-
----
-
-## 5. 现有能力基线
-
-### 5.1 Strategy Common
-
-当前 `StrategyInput`：
-
-```text
-prepared_data
-parameters
-initial_positions: Mapping[str, bool]
-runtime_context
-```
-
-当前 `StrategyRunResult`：
-
-```text
-definition
-parameters
-decisions
-authorizations
-diagnostics
-```
-
-### 5.2 Portfolio / Backtest
-
-当前已有：
-
-```text
-StrategyDecision
-→ strategy_decisions_to_target_weights()
-→ target_weight snapshots
-→ PortfolioBacktestEngine
-```
-
-支持 rank / score priority、max positions、max weight、equal weight、cash buffer、zero target 与 full target snapshots。
-
-Task07-A **不得重新实现 Portfolio Engine**。允许新增的只是：
-
-- native target 的结构化转换；
-- native/legacy 两条输入路径的唯一选择路由；
-- 统一结果校验。
+1. `StrategyRunResult` 增加可表达**完整 desired portfolio** 的 typed contract；
+2. `StrategyInput` 增加 System B 后续实际需要的**最小 typed initial holdings**；
+3. 建立统一 QRP-owned checked runner：`input validation → strategy.run → result validation`；
+4. 建立 `StrategyRunResult → target frame` 唯一最高层路由；
+5. native target 成为 authority 时不再从 decisions 二次推导 target；
+6. canonical `StrategyRunResult` 进入现有 Product/replay reproducibility evidence；
+7. 保持旧简单策略、declarative strategy 和旧 decisions 路径默认行为不变；
+8. 不提前实现 07-B / 07-C 业务规则；
+9. 不为了 seeded holdings 改造 PortfolioBacktestEngine / Account 模型。
 
 ---
 
-## 6. 最小 Common Contract（冻结）
+## 5. 最小 Common Contract（冻结）
 
-### 6.1 Portfolio Target 是 StrategyRunResult 一等结果
+### 5.1 Native Portfolio Target
 
 新增公共类型：
 
@@ -241,119 +197,99 @@ class StrategyPortfolioTarget:
 portfolio_targets: tuple[StrategyPortfolioTarget, ...] = ()
 ```
 
-公共导出必须从 `qrp_atlas.strategies` 暴露，调用方不得依赖内部模块路径。
+公共类型必须从 `qrp_atlas.strategies` 暴露。
 
-### 6.2 Full Snapshot 唯一语义
-
-首轮审计 B-1 后冻结：
+### 5.2 Full Snapshot 唯一语义
 
 > **每个 `StrategyPortfolioTarget` 都是该 `trade_date` 的完整 desired portfolio state，不是增量 patch。**
 
 唯一解释：
 
-- `positions` 中列出的资产具有对应正/零目标权重；
-- **未出现在 `positions` 的任何当前持仓资产，其目标权重语义均为 0**；
-- `positions=()` 明确表示该目标日 desired portfolio 为**全现金**；
-- Adapter / persistence / replay 不得把省略资产解释为“保持原仓位”；
-- 不再保留“退出资产是否显式输出 0 由兼容层决定”的开放语义。
+- `positions` 中列出的资产具有对应目标权重；
+- 未出现在 `positions` 的任何当前持仓资产，其 desired target weight = 0；
+- `positions=()` = desired portfolio 全现金；
+- Adapter / persistence / replay 不得解释为“省略即保持”；
+- 策略无需为所有历史退出资产长期保留显式 0 行；
+- Engine-facing 转换如需要显式 0，只能依据完整 snapshot 语义确定性生成。
 
-为了 canonical snapshot 最小化，策略不要求为所有已退出资产显式保留 `target_weight=0` 行；**省略即 0** 是合同语义。转换成现有 Engine target frame 时，如执行引擎需要显式 zero row，由转换层基于前一完整 snapshot 确定性补齐；这只是结构转换，不改变业务含义。
+### 5.3 `target_weight` 是唯一 Strategy Target authority
 
-### 6.3 target_weight 是唯一 Strategy Target authority
-
-冻结：
-
-> **v1.1 Strategy Portfolio Target 只以 `target_weight` 为业务权威，不引入并列权威 `target_quantity`。**
+v1.1 不引入并列权威 `target_quantity`。
 
 要求：
 
 - finite；
 - `0 <= target_weight <= 1`；
 - 单 target 总权重 `<= 1 + tolerance`；
-- residual 是 cash；
-- quantity / integer lot / price-dependent feasibility 下沉 Portfolio / Backtest。
+- residual = cash；
+- quantity / lot / price-dependent cash feasibility 下沉 Portfolio / Backtest。
 
-### 6.4 Date 语义冻结
+### 5.4 Target 日期语义
 
-`StrategyPortfolioTarget.trade_date` 是：
+`StrategyPortfolioTarget.trade_date` = **strategy target/signal date**，不是最终 execution date。
 
-> **策略目标/信号日期（strategy target date），不是最终成交执行日期。**
+Canonical：
 
-Canonical 规则：
+- exact `YYYY-MM-DD`；
+- 无 time / timezone；
+- 同 result 内 target date 唯一；
+- date ASC；
+- native target converter 不做任何日期 shift；
+- 调用链既有 timing 层只 shift 一次。
 
-- 只接受 date-only `YYYY-MM-DD`；
-- 不接受带时间部分或 timezone 的 target date；
-- 同一 `StrategyRunResult` 内 target date 唯一；
-- target date ASC 排序。
-
-**native target 转换层绝不做日期平移。**
-
-每条产品/回测调用链继续由其既有 timing 层负责 signal/target date → execution date，且只能发生一次。特别是 Product Service 已有 execution-date shift 时，native target 进入该路径后不得再次 next-day shift。
-
-### 6.5 Strategy Target / Decision / Authorization 职责
+### 5.5 Authorization / Decision / Target 职责
 
 ```text
-StrategyAuthorization
-= 市场级 / 策略级许可或否决
-
-StrategyDecision
-= 资产级判断与解释
-
-StrategyPortfolioTarget
-= 组合级最终 desired state
+StrategyAuthorization = 策略级许可/否决
+StrategyDecision      = 资产级判断与解释
+StrategyPortfolioTarget = 组合级最终 desired state
 ```
 
-三者允许同时存在用于解释，但 **portfolio authority 只有一个**：
+三者可共存，但 portfolio authority 唯一：
 
-- `portfolio_targets` 非空 → target authority = native targets；
-- `portfolio_targets` 为空 → target authority = legacy decisions adapter。
+```text
+portfolio_targets 非空 → authority = native targets
+portfolio_targets 为空 → authority = legacy decisions adapter
+```
 
-`decisions` 在 native target run 中只能承担 explanation / audit，不得再次生成第二份生产 target。
+native target run 中 decisions 只用于 explanation / audit。
 
 ---
 
-## 7. Deterministic Serialization（冻结）
+## 6. Deterministic Serialization（冻结）
 
-### 7.1 Canonical ordering
-
-固定：
+### 6.1 排序
 
 ```text
 portfolio_targets: trade_date ASC
-positions within target: asset_id ASC
+positions: asset_id ASC
 ```
 
-禁止按输入顺序、权重或 reason 排序。
+禁止依赖输入顺序、权重或 reason 排序。
 
-### 7.2 新 target evidence 类型域
+### 6.2 Target evidence 类型域
 
-为避免破坏旧 StrategyDecision evidence，07-A **只对新增 Portfolio Target evidence 收紧合同**，不追溯重构所有 legacy evidence。
+新增 target evidence 只允许 JSON-compatible tree：
 
-`StrategyPortfolioTargetPosition.evidence` 只允许 JSON-compatible tree：
+- null / bool / string / integer / finite float；
+- list / tuple → JSON list；
+- string-keyed Mapping，递归规范化并按 key 排序。
 
-- `null`；
-- bool；
-- string；
-- integer；
-- finite float；
-- list / tuple（序列化为 JSON list）；
-- string-keyed Mapping，递归校验。
+拒绝：
 
-明确拒绝：
-
-- NaN / `+/-Inf`；
+- NaN / Inf；
 - set / frozenset；
-- pandas / NumPy / datetime 等未显式转换的运行时对象；
-- 非字符串 Mapping key；
+- 非字符串 key；
+- pandas / NumPy / datetime 等未显式规范化对象；
 - 任意不可 JSON 序列化对象。
 
-Mapping canonical serialization 递归按 key 排序。
+不借 Task07-A 追溯重构全部 legacy `StrategyDecision.evidence`。
 
-### 7.3 to_dict / canonical JSON
+### 6.3 Canonical JSON
 
-新增两个 dataclass 必须提供稳定 `to_dict()`；`StrategyRunResult.to_dict()` 必须包含 `portfolio_targets`。
+新增类型提供稳定 `to_dict()`；`StrategyRunResult.to_dict()` 必须包含 `portfolio_targets`。
 
-Canonical JSON 采用：
+Canonical JSON 至少满足：
 
 ```text
 UTF-8
@@ -362,27 +298,13 @@ allow_nan=False
 stable separators
 ```
 
-是否复用现有 `deterministic_json()` 实现由实现审计决定；不得建立业务语义重复的第二套序列化规则。
+优先复用既有 deterministic JSON helper；不得建立第二套业务 SSOT。
 
 ---
 
-## 8. 最小 typed holdings 输入（冻结）
+## 7. 最小 typed holdings（冻结）
 
-### 8.1 为什么 bool 不足
-
-System B 后续至少需要区分：
-
-```text
-未持有
-当前持有，已完成一次建仓
-当前持有，已发生多次建仓/加仓
-```
-
-`Mapping[str, bool]` 无法表达 entry count 与必要日期。
-
-### 8.2 最小类型
-
-新增：
+### 7.1 类型
 
 ```python
 @dataclass(frozen=True)
@@ -403,78 +325,143 @@ holdings: Mapping[str, StrategyHoldingState] = field(default_factory=dict)
 holdings_as_of_date: str | None = None
 ```
 
-公共类型从 `qrp_atlas.strategies` 导出。
+只进入 System B Task07 已证明需要的字段，不引入 quantity/cost/cash/account/order/PNL 等 Broker/Account 语义。
 
-### 8.3 holdings 唯一时间语义
+### 7.2 唯一 as-of 语义
 
-首轮审计 M-2 后冻结：
-
-> **`holdings` 是在本次 `prepared_data` 第一个交易日开始评估之前的初始持仓快照。**
+> **`holdings` 是本次 `prepared_data` 第一个交易日开始评估之前的 initial holding snapshot。**
 
 规则：
 
-- `holdings` 非空时，`holdings_as_of_date` 必填；
-- `holdings_as_of_date` 只接受 `YYYY-MM-DD`；
-- `holdings_as_of_date` 必须严格早于 `prepared_data` 的最早 `trade_date`；
-- Common validator 不负责判断它是否为“上一合法交易日”，因为 Strategy Common 不查询交易日历；历史/生产输入准备层负责提供正确 PIT snapshot；
-- 策略在多日 `prepared_data` 内部如需要推进 holding state，由策略自身的确定性业务逻辑按日期顺序推进；07-A 不设计 date-keyed account ledger。
+- holdings 非空 → `holdings_as_of_date` 必填；
+- exact `YYYY-MM-DD`；
+- `holdings_as_of_date < min(prepared_data.trade_date)`；
+- Common 不判断是否上一合法交易日，不查询 calendar；
+- PIT input preparation 层负责提供合法历史快照；
+- 多日 prepared_data 中 state progression 由策略确定性推进；
+- 07-A 不建设 date-keyed account ledger。
 
-这使 replay 语义固定为：
+### 7.3 holdings 只包含当前持仓
 
-```text
-(initial holdings as-of D-1-ish snapshot)
-+ prepared facts from D...
-+ parameters
-→ deterministic strategy results/targets
-```
+Mapping 中出现的资产必须：
 
-### 8.4 holdings 只包含“当前持仓”
+- `current_weight > 0` 且 finite；
+- `entry_count >= 1` 且非 bool；
+- key == state.asset_id；
+- entry dates 若存在均为 `YYYY-MM-DD`；
+- entry dates <= holdings_as_of_date；
+- first <= last。
 
-为避免零仓历史状态歧义：
+未出现的资产 = 当前未持有。
 
-- `holdings` Mapping 中出现的资产必须 `current_weight > 0`；
-- `entry_count >= 1`；
-- 未出现的 asset 即当前未持有；
-- 退出后的历史 entry count 不通过 `holdings` 保存；若未来业务需要独立历史 position lifecycle，应另行有证据设计，不在 07-A 提前建设。
+### 7.4 Legacy `initial_positions` 兼容
 
-日期约束：
-
-- `first_entry_date` / `last_entry_date` 若非空，必须为 `YYYY-MM-DD`；
-- 日期不得晚于 `holdings_as_of_date`；
-- 两者都存在时 `first_entry_date <= last_entry_date`。
-
-### 8.5 与 legacy initial_positions 的精确兼容规则
-
-保留：
+保留现有：
 
 ```python
 initial_positions: Mapping[str, bool]
 ```
 
-兼容规则：
-
-1. `holdings` 为空：完全沿用 legacy `initial_positions` 行为；
-2. `holdings` 非空、`initial_positions` 为空：新复杂策略消费 typed holdings；
-3. 两者均非空：对 key union 做严格一致性校验：
+若两者同时存在，对 key union 冻结：
 
 ```text
 legacy_held = initial_positions.get(asset_id, False)
-typed_held  = asset_id in holdings   # holdings 内均要求 current_weight > 0
-
+typed_held  = asset_id in holdings
 legacy_held must equal typed_held
 ```
 
-4. `initial_positions` 缺失 key 按 `False`；
-5. 任一冲突在**策略执行前** fail-closed；
-6. 07-A 不移除、不 deprecate `initial_positions`。
+冲突必须在 **strategy execution 前** fail-closed。
 
 ---
 
-## 9. 统一 Strategy Result Validation（冻结）
+## 8. 统一 Checked Strategy Runner（Revision 2 冻结）
 
-### 9.1 单一 validator
+### 8.1 为什么必须有统一入口
 
-新增唯一公共结果校验入口：
+仅有 `validate_strategy_result()` 不足，因为 holdings、as-of、legacy conflict 等属于 **StrategyInput 合同**，必须在业务策略执行前拒绝。
+
+因此所有 QRP-owned strategy execution 的正式顺序冻结为：
+
+```text
+raw StrategyInput
+        ↓
+validate_and_normalize_strategy_input()
+        ↓
+normalized StrategyInput
+        ↓
+strategy.run(normalized_input)
+        ↓
+validate_strategy_result()
+        ↓
+validated StrategyRunResult
+```
+
+### 8.2 最小公共 helper
+
+允许新增一个很薄的 QRP Common helper，例如：
+
+```python
+run_strategy_checked(
+    strategy: StrategyProtocol,
+    strategy_input: StrategyInput,
+) -> StrategyRunResult
+```
+
+其职责严格限定为：
+
+```text
+1. validate + canonicalize input
+2. invoke strategy.run exactly once
+3. validate + canonicalize result
+4. return validated result
+```
+
+它不是新 Runtime Framework，不做：
+
+- 数据库查询；
+- indicator preparation；
+- portfolio construction；
+- execution；
+- persistence；
+- System B 业务判断。
+
+### 8.3 Input validator 返回规范化 StrategyInput
+
+现有 `validate_strategy_input()` 当前主要返回 canonical DataFrame。Revision 2 冻结的是**能力语义**，具体实现可最小选择：
+
+- 向后兼容保留现有低层 validator，并新增 `validate_and_normalize_strategy_input()`；或
+- 在不破坏现有调用方的前提下扩展现有 helper。
+
+正式 QRP-owned runner 最终必须得到一个**规范化后的 `StrategyInput`**，其中：
+
+- prepared_data canonical；
+- parameters 保持调用方已 resolve 的值；
+- initial_positions 已验证；
+- holdings / holdings_as_of_date 已验证；
+- holdings 与 legacy initial_positions 冲突已拒绝。
+
+### 8.4 QRP-owned 调用点不得绕过
+
+至少覆盖：
+
+- `StrategyRegistry.run()`；
+- `StrategyBacktestRuntime`；
+- `run_strategy_portfolio_backtest()`；
+- Product Service 直接 strategy instance 路径；
+- cross-sectional product path；
+- event product path；
+- residual / 其他当前 QRP-owned strategy runner；
+- 后续 07-B / 07-C 新增正式 runner。
+
+实现 Agent 必须先 grep/审计所有 QRP-owned `.run(StrategyInput(...))` / 等价调用，确保不存在正式路径绕过 checked runner。
+
+不要求技术上拦截外部 Python 用户直接调用任意 strategy object `.run()`；该行为不属于 QRP-owned product contract。
+
+---
+
+## 9. Result Validation（冻结）
+
+统一：
 
 ```python
 validate_strategy_result(
@@ -483,44 +470,24 @@ validate_strategy_result(
 ) -> StrategyRunResult
 ```
 
-职责仅是验证并 canonicalize 新增/已有结果合同所需的稳定结构，不执行业务策略。
-
-### 9.2 必须校验
-
-至少：
+至少校验：
 
 - result definition code/version 与被执行 strategy definition 一致；
-- target strategy_code/version 与 result definition 一致；
-- target date canonical、唯一、ASC；
+- target strategy code/version 与 result definition 一致；
+- target date exact、唯一、ASC；
 - position asset_id 非空、唯一、ASC；
-- target_weight finite、范围合法、总和合法；
-- target evidence 为 07-A JSON-compatible tree；
-- target diagnostics 为稳定字符串序列；
-- 不允许 native target contract 违反 full snapshot / deterministic 规则。
+- target_weight finite/range/sum；
+- evidence JSON-compatible；
+- diagnostics string-only；
+- canonical serialization 可重复。
 
-### 9.3 唯一执行边界
-
-所有 **QRP framework-owned** `strategy.run()` 调用点，必须在任何 Adapter、持久化或 Engine 之前立即调用 `validate_strategy_result()`。
-
-至少包括：
-
-- `StrategyRegistry.run()`；
-- `StrategyBacktestRuntime.run()`；
-- `run_strategy_portfolio_backtest()`；
-- Product Service 中直接调用 strategy instance 的路径；
-- 未来 Task07-B/C 新增的 QRP-owned runner。
-
-不要求通过 Python Protocol 技术上拦截外部调用者直接执行任意对象的 `.run()`；但 QRP 自己的正式运行路径不得绕过 validator。
-
-非法 result 一律 fail-closed，不允许依赖下游“碰巧报错”。
+非法 result 在任何 Adapter / persistence / Engine 前 fail-closed。
 
 ---
 
 ## 10. Strategy Result → Target Frame 唯一路由（冻结）
 
-### 10.1 唯一 Common 入口
-
-新增/收敛一个唯一入口，例如：
+建立唯一最高层入口，例如：
 
 ```python
 strategy_result_to_target_weights(
@@ -530,22 +497,18 @@ strategy_result_to_target_weights(
 ) -> pd.DataFrame
 ```
 
-该函数先假定 result 已统一校验；必要时可 defensive validate，但不得形成第二套规则。
-
 唯一分支：
 
 ```text
 if strategy_result.portfolio_targets:
-    convert native full snapshots → canonical target frame
+    native full snapshots → target frame
 else:
-    call existing strategy_decisions_to_target_weights(...)
+    existing strategy_decisions_to_target_weights(...)
 ```
 
-现有 `strategy_decisions_to_target_weights()` 保留为 legacy decisions 专用实现，不再作为 Product / Portfolio 的最高层入口。
+`strategy_decisions_to_target_weights()` 保留为 legacy decisions 专用低层实现，不再作为 Product / Portfolio 最高层入口。
 
-### 10.2 native target → Engine frame 字段
-
-转换后的 Engine-facing frame 继续使用现有最小结构：
+Engine-facing frame 继续为：
 
 ```text
 trade_date
@@ -554,92 +517,110 @@ target_weight
 priority
 ```
 
-规则：
+native target 规则：
 
-- `trade_date` 原样保持 strategy target/signal date；
-- `asset_id` ASC；
-- `target_weight` 直接来自 native target；
-- native target 不依赖 `priority` 再做容量决策；容量竞争已属于 07-C 策略输出，因此 `priority` 只能使用稳定 neutral value（如 `0.0`）满足现有 Engine frame schema；
-- rich `reason_code` / `evidence` / `diagnostics` **不塞进 Engine frame**，它们保留在 canonical `StrategyRunResult` 中。
-
-### 10.3 full snapshot 到显式 zero rows
-
-如果现有 Portfolio Engine 对目标日期“省略资产=0”已有同样语义，则转换层不得重复猜测。
-
-若某调用链需要显式 zero rows，必须仅依据：
-
-```text
-previous full target snapshot - current positions
-```
-
-确定性补 0；不得从 `StrategyDecision` 或外部 current holdings 推导第二份业务意图。
-
-### 10.4 禁止双 SSOT
-
-native targets 非空时：
-
-- 不调用 `strategy_decisions_to_target_weights()`；
-- decisions 只作为解释；
-- 不比较后再“选择更合理的一份”；
-- 不让 Product Service 与 Portfolio helper 分别各写一套 native conversion。
+- date 原样保持 strategy target date；
+- target_weight 原样来自 native contract；
+- asset_id ASC；
+- `priority` 仅使用稳定 neutral value 适配既有 frame；不得重新做 System B 容量决策；
+- reason/evidence/diagnostics 不塞进 lossy Engine frame；
+- native target 非空时绝不调用 decisions adapter。
 
 ---
 
 ## 11. Backtest / Product 接入边界（冻结）
 
-### 11.1 Portfolio Product path
+### 11.1 Portfolio Product Path
 
-现有 Product Service 当前在 strategy.run() 后无条件走 decisions adapter。07-A 必须改为：
+正式链：
 
 ```text
-strategy.run()
-→ validate_strategy_result()
+prepare data / resolve params
+→ construct StrategyInput
+→ run_strategy_checked()
 → strategy_result_to_target_weights()
 → existing timing shift exactly once
 → PortfolioBacktestEngine
 ```
 
-native target 与 legacy decisions 最终复用同一个 Portfolio Engine。
+native 与 legacy strategy 最终复用同一个 Portfolio Engine。
 
-### 11.2 Legacy StrategyBacktestRuntime
+### 11.2 Legacy `StrategyBacktestRuntime`
 
-`StrategyBacktestRuntime` 是 ENTER/HOLD/EXIT trade-level runtime，不是完整 portfolio target runtime。
+这是 ENTER/HOLD/EXIT trade-level runtime，不是完整 portfolio target runtime。
 
-07-A 采用最小兼容策略：
+若 checked result 含 native `portfolio_targets`：
 
-> **若 validated StrategyRunResult 含 native `portfolio_targets`，Legacy StrategyBacktestRuntime 必须立即抛出明确 unsupported-path 错误，禁止继续遍历空/旧 decisions 并静默返回“无交易”。**
+> **立即 fail-fast unsupported-path。**
 
-需要 native target 回测的策略必须走 Portfolio Backtest path。
+禁止继续遍历空/旧 decisions 后返回“无交易成功”。
 
-07-A 不把 legacy trade runtime 重构成第二个 Portfolio Engine。
+不借 07-A 把 legacy runtime 重构成第二个 Portfolio Engine。
 
-### 11.3 typed holdings 在现有 Portfolio/Product API 的范围
+### 11.3 typed holdings 产品边界
 
-首轮审计 M-6 后明确：
-
-- 07-A **保证 `StrategyInput` 底层正式支持 typed initial holdings**；
-- 现有 `PortfolioBacktestEngine` 仍保持 cash-only initial account，不在 07-A 增加 seeded broker holdings；
-- `run_strategy_portfolio_backtest()` / Product Service 如没有正式 seeded-holdings execution semantics，**不得静默丢弃调用方提供的非空 holdings**；必须 fail-closed 或保持 API 不暴露该参数；
-- System B 07-B/C 的策略单元/集成验证可以直接构造 `StrategyInput(holdings=...)`；
-- Task08 历史验证可以从空初始组合开始，让策略按时间轴确定性推进；
-- 每日生产如何从真实/人工持仓快照构建 typed holdings 并调用策略，属于 Task09 production orchestration；
-- 若 07-B/C 实际证明在 Task07 内就必须由某 QRP-owned runner 接收非空 holdings，则只增加**传递到 StrategyInput 的薄 runner 参数**，仍不得因此改造 Portfolio Engine seeded-account semantics。
-
-这一定义解决“模型存在但被现有产品静默丢弃”的问题，同时避免 07-A scope creep 到 Account/Execution。
+- 07-A 保证底层 `StrategyInput` 正式支持 typed holdings；
+- 现有 PortfolioBacktestEngine 保持 cash-only initial account；
+- QRP-owned wrapper 不得接收 holdings 后静默丢弃；
+- 未正式支持 seeded holdings 的 API 要么不暴露 holdings 参数，要么对非空 holdings fail-closed；
+- 07-B/C 单元与策略集成测试可直接构造 typed StrategyInput；
+- Task08 可从空初始组合开始历史运行；
+- Task09 再处理 daily production holdings orchestration；
+- 若 07-B/C 证明正式 runner 必须接收 non-empty holdings，只加“传递到 StrategyInput”的薄参数，不扩 Portfolio Engine seeded-account semantics。
 
 ---
 
-## 12. Target rich evidence / diagnostics 的审计位置
+## 12. Canonical Strategy Result Persistence（Revision 2 冻结）
 
-`StrategyPortfolioTargetPosition.reason_code/evidence` 与 target `diagnostics` 属于 **strategy result facts**，不是 execution facts。
+### 12.1 Rich strategy result 不能只存在内存
 
-冻结：
+`StrategyPortfolioTargetPosition.reason_code/evidence`、target diagnostics、原始 target signal snapshot 都属于 **strategy result facts**。
 
-- canonical authority 是 `StrategyRunResult.to_dict()` 中的 `portfolio_targets`；
-- Engine-facing target frame 是有意的 lossy projection，只用于 portfolio realization；
-- `StrategyPortfolioBacktestRun` 等详细运行结果必须继续携带原始 `strategy_result`；
-- Product / Replay 若持久化 strategy result snapshot，必须持久化完整 canonical target rich data，不得只保存 Engine frame 后宣称可解释；
-- 07-A 不新增 broker/execution 表，也不为该 rich evidence 单独建设数据库 schema；Task08/09 复用既有 result/reproducibility 基础设施时必须保留该 canonical snapshot。
+Engine target frame 是有意的 lossy projection，不能成为 replay / audit 的唯一存档。
+
+因此 Revision 2 冻结：
+
+> **凡 Product/backtest product path 产生 canonical `StrategyRunResult`，必须将其 canonical `to_dict()` snapshot 写入现有 reproducibility evidence。**
+
+### 12.2 复用现有 `reproducibility.json`
+
+Task07-A 不新增数据库表，不新建第二套 result store。
+
+优先复用现有 Product run 的 `reproducibility.json`，在其中增加稳定 strategy result snapshot 字段，例如：
+
+```json
+{
+  "strategy_result": {
+    "definition": "...existing canonical shape...",
+    "parameters": {},
+    "decisions": [],
+    "authorizations": [],
+    "portfolio_targets": [],
+    "diagnostics": []
+  }
+}
+```
+
+具体 key 命名可按现有 writer/reproducibility schema 风格最小确定，但必须满足：
+
+- snapshot = validated canonical `StrategyRunResult.to_dict()`；
+- 写入发生在 result 已 validate 后；
+- 不从 Engine frame 反推 rich strategy result；
+- replay/load 能读取该 snapshot；
+- replay 重新运行后可以对 canonical strategy result 做确定性一致性验证或至少纳入 reproducibility evidence；
+- legacy run 若没有 native target，仍可写同一统一 shape，不要求另建 legacy schema。
+
+### 12.3 不把 persistence 变成新产品系统
+
+07-A 只允许对现有 `BacktestRunWriter` / reproducibility snapshot 做最小扩展。
+
+禁止：
+
+- 新 strategy result 数据库；
+- 新 audit service；
+- broker/execution result 混入 strategy result；
+- Task08 replay orchestration 重写；
+- Task09 production state store 提前建设。
 
 ---
 
@@ -647,141 +628,106 @@ native target 与 legacy decisions 最终复用同一个 Portfolio Engine。
 
 ### 07-B
 
-- Task05 authorization 如何约束新增仓；
-- Theme Rank 如何参与候选选择；
-- Asset Rank 如何参与候选 / 已有持仓比较；
-- 新候选相对现有持仓评分门槛；
+- authorization 如何约束新增仓；
+- Theme Rank / Asset Rank 如何参与选择与比较；
+- 新候选相对已有持仓评分门槛；
 - 已有持仓每日重评；
 - 身份变化不得机械触发卖出；
 - 两个连续实际交易日收盘低于 MA5 的退出；
 - 第二次加仓资格；
-- 监管严重异动等业务判断。
+- 严重异动等业务判断。
 
 ### 07-C
 
 - 单次 1/8；
 - 单票最多两次；
 - 计划 25%；
-- 单票不超过 30%；
-- 最多 6 只不同股票；
+- 单票 <= 30%；
+- 最多 6 只；
 - 组合容量竞争；
 - 退出释放容量；
-- 同日 exit / add 的策略级确定顺序；
+- 同日 exit/add 策略级顺序；
 - 最终完整 target snapshot。
 
-07-A 只提供这些规则所需要的标准接口，不预实现规则。
+07-A 只提供接口，不预实现这些规则。
 
 ---
 
-## 14. Execution / Backtest 边界
+## 14. PIT / Replay Determinism
 
-不得提升为 Strategy Common：
+必须满足：
 
-- 实际是否成交；
-- 涨跌停无法成交；
-- 停牌；
-- T+1；
-- 委托与成交先后；
-- 部分成交；
-- 滑点；
-- 手续费；
-- broker quantity rounding；
-- OMS 幂等与恢复。
-
-特别冻结：
-
-```text
-Strategy target = desired business portfolio state
-Realized portfolio = downstream price / lot / cash constraint resolution
-```
-
-07-C 只处理 System B 业务组合约束；价格、整手和现实成交导致的 realizability 仍属于 Portfolio/Backtest。
-
----
-
-## 15. PIT / Replay Determinism
-
-新增 contract 必须满足：
-
-- target date = canonical `YYYY-MM-DD`；
+- target date canonical；
 - strategy code/version 明确；
-- target / position 排序固定；
-- target evidence JSON-compatible + canonical；
-- holdings 有明确 `holdings_as_of_date`；
-- holdings 可由历史时点快照重建；
-- strategy `run()` 不主动查询当前数据库最新状态；
-- 同一 prepared input + parameters + initial holdings 必须得到同一 result；
-- timing shift 只由调用链下游现有 timing 层执行一次。
+- target/position ordering 固定；
+- evidence canonical；
+- holdings as-of 明确；
+- strategy run 不主动查询“当前最新数据库状态”；
+- 同 prepared input + params + initial holdings → 同 StrategyRunResult；
+- checked runner 的 input/output validation 顺序唯一；
+- timing shift 只执行一次；
+- canonical StrategyRunResult 被写入 reproducibility evidence，而不是只保存 lossy target frame。
 
 ---
 
-## 16. Validation 细则
+## 15. Validation 细则
 
-### 16.1 StrategyPortfolioTarget
+### Input
 
-检查：
+- prepared_data 按现有 scope 规则 canonical；
+- required fields / indicators 完整；
+- identity 唯一；
+- holdings state 合法；
+- holdings as-of 合法；
+- initial_positions 与 holdings 无冲突。
 
-- `trade_date` exact `YYYY-MM-DD`；
-- target dates 唯一、ASC；
-- strategy code/version 与 result definition 一致；
-- position `asset_id` 非空、唯一、ASC；
-- `target_weight` finite 且 `[0,1]`；
-- target sum `<= 1 + tolerance`；
-- position evidence JSON-compatible；
-- diagnostics string-only；
-- canonical serialization 可重复。
+### Result
 
-### 16.2 StrategyHoldingState / StrategyInput
-
-检查：
-
-- Mapping key 与 `state.asset_id` 一致；
-- holdings 内 `current_weight` finite 且 `> 0`；
-- `entry_count` 为非 bool 正整数；
-- holdings 非空时 `holdings_as_of_date` 必填；
-- as-of date / entry dates exact `YYYY-MM-DD`；
-- `holdings_as_of_date < min(prepared_data.trade_date)`；
-- entry dates 不晚于 as-of；
-- first <= last；
-- legacy initial_positions 与 holdings key union 严格一致。
-
-冲突必须在 strategy execution 前 fail-closed。
+- definition/version 一致；
+- target dates 唯一、canonical、ASC；
+- positions asset_id 唯一、ASC；
+- weights finite/range/sum；
+- evidence JSON-compatible；
+- diagnostics stable；
+- full snapshot / serialization contract 合法。
 
 ---
 
-## 17. 测试要求
+## 16. 测试要求
 
 Task07-A 至少覆盖：
 
-1. 旧 built-in strategy 无 holdings/targets 时行为不变；
+1. legacy built-in 无 holdings/targets 行为不变；
 2. declarative strategy 行为不变；
-3. 新 target types 公共导出稳定；
-4. `StrategyRunResult.to_dict()` 包含 canonical targets；
-5. `positions=()` 表示全现金；
-6. omitted asset 的完整快照语义被唯一转换，不存在 patch interpretation；
-7. duplicate asset / duplicate target date fail-closed；
-8. target sum > 1 fail-closed；
-9. negative / NaN / inf target fail-closed；
-10. target evidence 非 JSON 类型 fail-closed；
-11. target ordering 固定为 date ASC + asset ASC；
-12. strategy code/version mismatch fail-closed；
-13. QRP-owned runners 在 Adapter/Engine 前统一调用 result validator；
-14. native target 存在时最高层路由不调用 decisions adapter；
-15. native target 为空时 legacy decisions path 行为不变；
-16. Product path native target 只发生一次 execution-date shift；
-17. Legacy StrategyBacktestRuntime 遇到 native target 明确 fail，而不是空交易成功；
-18. holdings as-of 与字段 validation；
-19. holdings + initial_positions key union conflict fail-closed；
-20. 现有 Portfolio/Product 路径不得静默丢弃非空 holdings；
-21. 同输入重复 run / serialization 输出一致。
-
-完成 targeted tests 后运行全量 regression。
+3. target/holding public exports 稳定；
+4. `StrategyRunResult.to_dict()` 含 canonical targets；
+5. `positions=()` = all cash；
+6. omitted asset = target 0，无 patch interpretation；
+7. duplicate asset/date fail-closed；
+8. invalid weight / NaN / Inf fail-closed；
+9. invalid evidence fail-closed；
+10. target ordering 固定；
+11. strategy/version mismatch fail-closed；
+12. holdings/as-of validation；
+13. holdings + initial_positions conflict 在 strategy.run 前 fail-closed；
+14. `run_strategy_checked()` 固定顺序：input validate → run once → result validate；
+15. Registry/runtime/portfolio/Product/cross-section/event/residual 等 QRP-owned paths 不绕过 checked runner；
+16. native target 存在时不调用 decisions adapter；
+17. native target 为空时 legacy adapter 行为不变；
+18. Product native target 只发生一次 timing shift；
+19. Legacy StrategyBacktestRuntime native target fail-fast；
+20. wrapper 不静默丢弃 non-empty holdings；
+21. Product result 的 existing reproducibility snapshot 包含 canonical `strategy_result`；
+22. rich target reason/evidence/diagnostics 经 write/load 后保持 canonical；
+23. replay/reproducibility 测试能读取 strategy result snapshot；
+24. 同输入重复 run + serialization 输出一致；
+25. full regression 通过。
 
 ---
 
-## 18. 允许修改的典型区域
+## 17. 允许修改的典型区域
 
-预期主要落在：
+预期：
 
 ```text
 src/qrp_atlas/strategies/models.py
@@ -791,99 +737,127 @@ src/qrp_atlas/strategies/registry.py
 src/qrp_atlas/backtest/runtime/strategy.py
 src/qrp_atlas/backtest/portfolio/strategy.py
 src/qrp_atlas/backtest/product/service.py
+src/qrp_atlas/backtest/product/cross_section.py   # 若存在直接 run 绕过
+src/qrp_atlas/backtest/product/event.py           # 若存在直接 run 绕过
+src/qrp_atlas/backtest/results/writer.py          # existing reproducibility snapshot minimal extension
+src/qrp_atlas/backtest/results/                   # load/replay evidence tests as needed
 相关 tests
 ```
 
-允许新增一个很薄的 common result→target adapter / canonical serialization helper；不得为了目录整洁大范围搬迁。
+允许新增：
+
+- 一个薄 `run_strategy_checked()` helper；
+- 一个薄 result→target adapter；
+- 必要 canonical serialization helper。
+
+不得大范围搬迁目录或重构 Strategy Framework。
 
 ---
 
-## 19. 明确禁止的 Scope Creep
+## 18. 明确禁止的 Scope Creep
 
-Task07-A 禁止实现：
+禁止：
 
-- Strategy Framework v2 重构；
+- Strategy Framework v2；
 - dynamic plugin loader；
-- external strategy RPC / protocol；
-- `PLUGIN / EXTERNAL` runtime；
-- 多账户模型；
-- Broker Position Model；
+- external strategy RPC；
+- PLUGIN / EXTERNAL runtime；
+- 多账户 / Broker Position Model；
 - seeded broker account / full account ledger；
-- OMS；
-- order plan；
-- execution extension；
-- 任意资产类别的通用 portfolio domain；
-- 多币种；
-- margin / short；
+- OMS / order plan / execution extension；
+- 多资产通用 portfolio domain；
+- 多币种 / margin / short；
+- 新 strategy result database/store；
 - System B 07-B / 07-C 业务规则；
-- Task08 replay orchestration；
+- Task08 replay orchestration 重构；
 - Task09 production orchestration。
 
-如实现过程中发现“顺手可以做”，默认结论是：**不做，除非它阻塞本任务 DoD。**
+如发现“顺手可做”，默认不做，除非阻塞本任务 DoD。
 
 ---
 
-## 20. DoD
+## 19. DoD
 
 Task07-A 完成条件：
 
-1. `StrategyRunResult` 能表达 typed、完整、full-snapshot Portfolio Target；
-2. `positions=()` / omitted asset / residual cash 语义唯一；
-3. target date、排序、serialization 已 canonical；
-4. System B 后续 07-B/C 所需最小 typed initial holding state 有明确 as-of 边界；
-5. legacy `initial_positions` 兼容规则确定且 fail-closed；
-6. 有唯一 `validate_strategy_result()`，QRP-owned run paths 不绕过；
-7. 有唯一 `StrategyRunResult -> target frame` 最高层路由；
-8. native target 与 legacy decisions target 不形成双 SSOT；
-9. Product Portfolio path 可消费 native target，且日期 shift 只发生一次；
-10. legacy StrategyBacktestRuntime 不会静默忽略 native target；
-11. 非空 holdings 不会被 QRP-owned wrapper 静默丢弃；
-12. 现有 built-in / declarative strategy 默认行为不变；
-13. 通用 Portfolio / Backtest 无 System B 业务知识；
-14. 未引入 Execution / OMS / Broker Account scope；
-15. targeted tests + full regression 通过；
-16. 二次对抗审计无 BLOCKER / MAJOR 后才允许进入实现。
+1. `StrategyRunResult` 能表达 typed full-snapshot Portfolio Target；
+2. full snapshot / omitted asset / all-cash / residual cash 语义唯一；
+3. target date、ordering、serialization canonical；
+4. typed initial holdings 有明确 as-of 边界；
+5. legacy initial_positions 兼容规则确定；
+6. 所有 QRP-owned 正式策略运行采用 checked 顺序：input validate → run → result validate；
+7. input conflict 在业务 strategy.run 前 fail-closed；
+8. 有唯一 result→target highest-level router；
+9. native target 与 decisions 不形成双 SSOT；
+10. Product Portfolio path 可消费 native target，timing shift 仅一次；
+11. legacy StrategyBacktestRuntime 不静默忽略 native target；
+12. non-empty holdings 不被 wrapper 静默丢弃；
+13. canonical `StrategyRunResult` 写入现有 reproducibility evidence；
+14. rich target evidence 不因 Engine lossy frame 丢失；
+15. replay/result load 能访问 canonical strategy result snapshot；
+16. existing built-in / declarative strategy 默认行为不变；
+17. 通用 Portfolio / Backtest 无 System B 业务知识；
+18. 未引入 Account / OMS / Broker / 新 result store scope；
+19. targeted tests + full regression 通过；
+20. 三次对抗审计无 BLOCKER / MAJOR 后才允许实现。
 
 ---
 
-## 21. 首轮对抗审计处置记录
+## 20. 审计处置记录
 
-### BLOCKER
+### 第一轮
 
-- **B-1 完整快照与省略资产语义未冻结** → 已冻结 full snapshot：omitted asset = 0，`positions=()` = all cash。
-- **B-2 结果校验无统一执行入口** → 已冻结唯一 `validate_strategy_result()` 与所有 QRP-owned `strategy.run()` 后立即校验。
+**BLOCKER**
 
-### MAJOR
+- B-1 full snapshot 语义未冻结 → `omitted asset=0`, `positions=()=all cash`。
+- B-2 result fail-closed 无统一入口 → `validate_strategy_result()` + QRP-owned run 后统一校验。
 
-- **M-1 native target 转换 API / 日期语义未定义** → 已冻结唯一 `strategy_result_to_target_weights()` 路由；target date 为 strategy signal/target date；converter 不平移日期。
-- **M-2 holdings 缺 as-of 生命周期语义** → 已增加 `holdings_as_of_date`，定义为首个 prepared trade date 之前的 initial snapshot。
-- **M-3 initial_positions / holdings 冲突规则不完整** → 已冻结 key union bool 等价规则；holdings 只包含 current held assets。
-- **M-4 deterministic serialization 类型域未定义** → 已限定新增 target evidence JSON-compatible tree + canonical ordering/JSON。
-- **M-5 legacy StrategyBacktestRuntime 静默忽略 native target** → 已冻结 fail-fast unsupported-path。
-- **M-6 Portfolio/Product API 无法传入 holdings** → 已明确 07-A 底层 StrategyInput 支持；现有 cash-only Portfolio Engine 不扩 seeded account；任何 QRP-owned wrapper 禁止静默丢弃非空 holdings。
+**MAJOR**
 
-### MINOR / NIT
+- native target route/date → 唯一 result→target 路由；converter 不 shift。
+- holdings lifecycle → `holdings_as_of_date` initial snapshot。
+- initial_positions conflict → key-union bool equivalence。
+- deterministic serialization → target JSON domain + canonical ordering。
+- legacy runtime ignore native target → fail-fast。
+- Product/Portfolio holdings gap → 底层 typed input + wrapper 禁止静默丢弃，不扩 seeded account。
 
-- 排序键 → date ASC / asset_id ASC；
-- 日期 → exact `YYYY-MM-DD`；
-- rich target evidence/diagnostics → canonical StrategyRunResult authority，Engine frame 仅 lossy projection；
-- 新 dataclass → public export + `to_dict()`；
-- version consistency → 统一 result validator 在任何 Adapter/persistence/Engine 前校验。
+### 第二轮
+
+**MAJOR M-1：holdings execution-before validation 无统一入口**
+
+Revision 2 处置：
+
+```text
+validate_and_normalize_strategy_input
+→ strategy.run exactly once
+→ validate_strategy_result
+```
+
+统一收敛为 `run_strategy_checked()` 语义；所有 QRP-owned strategy execution path 必须接入。
+
+**MAJOR M-2：Product/replay 未持久化 canonical StrategyRunResult**
+
+Revision 2 处置：
+
+- validated `StrategyRunResult.to_dict()` 写入现有 `reproducibility.json`；
+- Engine target frame 继续只是 lossy projection；
+- 不新增数据库 schema / result store；
+- replay/load 测试必须覆盖 canonical strategy result snapshot。
 
 ---
 
-## 22. Task07-A 完成后的架构结果
+## 21. Task07-A 完成后的架构结果
 
-Task07-A 完成不代表 QRP 策略挂载闭环完成。
-
-它只意味着：
+Task07-A 完成只意味着：
 
 ```text
 QRP Strategy Runtime
-已能承载一个复杂策略原生输出完整 Portfolio Target
+可以用统一 input/result contract
+承载复杂策略原生输出完整 Portfolio Target
+并把 canonical strategy result 纳入现有 replay evidence
 ```
 
-真正的闭环仍是：
+真正闭环仍需：
 
 ```text
 07-A contract integration
