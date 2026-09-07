@@ -1,94 +1,78 @@
-# Task07-A 三次对抗审计启动说明
+# Task07-A 最终对抗审计启动说明
 
-请基于远端 `develop/v1.1` 最新状态，对以下 **Revision 2** 执行第三轮对抗审计：
+请基于远端 `develop/v1.1` 最新状态，对以下 **Revision 3** 执行最终对抗审计：
 
 - `docs/QRP产品蓝图v1.1/Task07/Task07-A_SystemB_Portfolio_Target_Contract_Integration_设计书.md`
 
-前两轮结论均为 `NEEDS_REVISION`。第三轮仍按同等攻击强度执行，只报告仍成立的问题或 Revision 2 新引入的问题。
+前三轮均曾给出 `NEEDS_REVISION`。本轮仍保持同等攻击强度；只报告仍成立的问题或 Revision 3 新引入的问题。
 
 ## 总原则
 
 > Task07 以 System B 业务闭环为唯一主目标；为实现该目标暴露出的 QRP Common 能力缺口，仅进行最小、通用、向后兼容扩展，不将 Task07 扩张为独立的 Strategy Framework 重构任务。
 
-## 本轮必须重点复核
+## 本轮首要复核：第三轮 M-3 EventFrame
 
-### 1. Checked Strategy Runner
-
-Revision 2 冻结：
+Revision 3 已冻结：
 
 ```text
-validate_and_normalize_strategy_input
+checked runner
+→ 先选择既有正确 input contract
+→ validate/normalize
 → strategy.run exactly once
-→ validate_strategy_result
+→ validate result
 ```
 
-并建议一个薄 `run_strategy_checked()` Common helper。
+普通 ASSET/MARKET 仍沿用现有 scope validator；`event_drift_basic` 使用 EventFrame 专用 normalizer，以 `available_trade_date` 为 evaluation date，不要求 `trade_date`。
 
-重点攻击：
+请重点攻击：
 
-- 这是否是解决 holdings execution-before fail-closed 的最小方案；
-- 是否能覆盖 Registry、StrategyBacktestRuntime、Portfolio helper、Product Service、cross-sectional、event、residual 等全部 QRP-owned 正式 run 路径；
-- 是否会造成某些 strategy 内部二次 input validation 或行为变化；
-- input normalization 是否会改变 legacy built-in/declarative semantics；
-- 是否存在 QRP-owned direct `.run()` 仍会绕过；
-- 是否不必要地演变为 Runtime Framework 重构。
+1. EventFrame normalizer 是否与当前 `event_drift_basic`、event product 和测试真实语义一致；
+2. deterministic sort 是否足够且不会改变现有业务结果；
+3. 不对 `(available_trade_date, ticker)` 强制唯一是否正确；
+4. event strategy 当前 enriched-candidate 去重是否确实应留在 strategy 内；
+5. `holdings_as_of_date < min(available_trade_date)` 是否是正确、最小的 event holdings 边界；
+6. checked runner 如何选择 EventFrame normalizer 是否能用薄 dispatch/callable 实现，而不需要新增 EVENT InputScope / validator registry；
+7. event 产品是否仍保持 `available_trade_date` 入场、无额外 next-open shift；
+8. 是否存在其他既有正式策略输入形态也会被统一 checked runner 错误套用 ASSET/MARKET validator。
 
-如认为不需要统一 checked runner，必须给出另一种能够在 strategy business logic 执行前统一 fail-closed 的更小方案。
+## 复核前两轮关闭项
 
-### 2. Canonical StrategyRunResult Persistence
+重新确认没有回归：
 
-Revision 2 冻结：
-
-> validated `StrategyRunResult.to_dict()` 作为 canonical strategy result snapshot 写入现有 Product run `reproducibility.json`，不新增数据库 schema / result store。
-
-重点攻击：
-
-- 现有 `BacktestRunWriter` / reproducibility schema 是否允许最小扩展；
-- strategy result snapshot 是否应该放在 reproducibility 而非 execution snapshot / config；
-- 是否会导致结果包尺寸或 schema compatibility 明显问题；
-- legacy run 是否能保持兼容；
-- replay/load 是否真的能访问该字段；
-- replay 是否必须在 Task07-A 比较 snapshot，还是只要求保存/读取即可，避免提前实现 Task08；
-- reason/evidence/diagnostics 是否完整保留且 deterministic；
-- 是否错误把 Engine target frame 当 canonical authority。
-
-### 3. 复核前两轮已关闭项没有回归
-
-至少重新确认：
-
-- full snapshot: omitted asset=0, `positions=()`=all cash；
-- target_weight 唯一 authority；
-- holdings as-of initial snapshot；
-- holdings / initial_positions key-union compatibility；
-- native target / legacy decisions 不双 SSOT；
-- target date 是 strategy target date，timing shift exactly once；
+- full snapshot：omitted asset=0，`positions=()`=all cash；
+- `target_weight` 唯一 Strategy target authority；
+- holdings as-of；
+- holdings / legacy initial_positions 冲突 fail-closed；
+- checked runner 的 input-before-run / result-after-run 顺序；
+- native target / legacy decisions 不形成双 SSOT；
+- native target date 不在 converter shift，产品 timing 只 shift 一次；
 - legacy StrategyBacktestRuntime native target fail-fast；
 - non-empty holdings 不被 wrapper 静默丢弃；
-- deterministic target serialization；
-- priority neutral value 不重新做业务容量决策；
-- Account/OMS/Execution scope 没有回流。
+- deterministic serialization；
+- canonical `StrategyRunResult.to_dict()` 写入既有 `reproducibility.json` 并可 load；
+- Account / OMS / Execution / 新 result store / validator framework 没有 scope 回流。
 
 ## 必查代码
 
-至少：
+至少核对：
 
 - `src/qrp_atlas/strategies/models.py`
 - `src/qrp_atlas/strategies/validation.py`
 - `src/qrp_atlas/strategies/registry.py`
-- `src/qrp_atlas/strategies/builtin/cross_section.py`
+- `src/qrp_atlas/strategies/builtin/event_drift.py`
 - `src/qrp_atlas/strategies/declarative/`
 - `src/qrp_atlas/backtest/runtime/strategy.py`
 - `src/qrp_atlas/backtest/portfolio/strategy.py`
 - `src/qrp_atlas/backtest/product/service.py`
 - `src/qrp_atlas/backtest/product/cross_section.py`
 - `src/qrp_atlas/backtest/product/event.py`
-- residual strategy/product paths if any
+- `src/qrp_atlas/backtest/product/timing.py`
 - `src/qrp_atlas/backtest/results/writer.py`
-- `src/qrp_atlas/backtest/results/` reproducibility load/service/replay code
-- `docs/QRP产品蓝图v1.1/02_架构与跨仓边界.md`
-- `docs/QRP产品蓝图v1.1/03_开发路线图与工作包.md`
+- `src/qrp_atlas/backtest/results/loader.py`
+- `tests/strategies/test_event_drift_basic.py`
+- 相关 product/replay tests
 
-## 输出格式
+## 输出
 
 按：
 
@@ -97,15 +81,9 @@ Revision 2 冻结：
 - MINOR
 - NIT
 
-每项必须有：
+每项必须包含 Evidence / Impact / Minimal Fix。
 
-- Evidence
-- Impact
-- Minimal Fix
-
-如果首轮/二轮问题已经真正关闭，不要重复罗列为问题，可放入 `Resolved Verification`。
-
-最终只给：
+最后只给一个结论：
 
 ```text
 READY_FOR_IMPLEMENTATION
@@ -117,12 +95,10 @@ READY_FOR_IMPLEMENTATION
 NEEDS_REVISION
 ```
 
-## 约束
+约束：
 
 - 只审计，不编码；
 - 不创建实现分支；
-- 不做文风优化；
-- 不发明 System B 07-B/07-C 新业务规则；
-- 不扩张 Strategy Framework；
-- 不要求 Task07-A 完成 Task08 replay orchestration；
-- 没有具体代码/正式规则证据，不升级问题等级。
+- 没有证据不要脑补；
+- 不因为已经第四轮就降低标准；
+- 不把审计扩张成 Strategy Framework 重构。
