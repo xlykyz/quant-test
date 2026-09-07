@@ -1,2 +1,0 @@
-Task07-A adversarial audit handoff prepared on develop/v1.1.
-Latest handoff commit: f1af64febf8149252653146d6b46e1c5b9bb04a2
