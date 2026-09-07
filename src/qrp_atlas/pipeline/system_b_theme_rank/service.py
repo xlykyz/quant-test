@@ -9,9 +9,10 @@ database side effects.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from datetime import UTC, date, datetime
+import contextlib
+import hashlib
 import json
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -22,16 +23,11 @@ import pandas as pd
 from qrp_atlas.contracts import (
     CALCULATION_VERSION,
     COLLECTION_ID,
-    CREATED_AT,
-    DC_HOT,
     INPUT_SNAPSHOT_ID,
-    POPULARITY_AVAILABLE,
-    POPULARITY_SOURCE_AVAILABILITY,
     POPULARITY_SOURCE_AVAILABILITY_TABLE,
     POPULARITY_UNAVAILABLE,
     PRODUCTION_RUN_ID,
     RANK_ELIGIBLE,
-    SYSTEM_B_THEME_RANK_CALCULATION_VERSION,
     SYSTEM_B_THEME_RANK_COMPONENT_AUDIT,
     SYSTEM_B_THEME_RANK_COMPONENT_AUDIT_TABLE,
     SYSTEM_B_THEME_RANK_SNAPSHOT,
@@ -43,8 +39,6 @@ from qrp_atlas.contracts import (
     THEME_M4_OBSERVATION_TABLE,
     THEME_M5_OBSERVATION_TABLE,
     THEME_M5_OBSERVATION_VERSION,
-    THS_HOT,
-    TRADE_DATE,
     TRADING_CALENDAR,
 )
 from qrp_atlas.indicators.system_b.theme_ranking import (
@@ -155,22 +149,16 @@ def _persist(
 
         connection.execute("COMMIT")
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             connection.execute("ROLLBACK")
-        except Exception:
-            pass
         raise
     finally:
         if registered_snapshot:
-            try:
+            with contextlib.suppress(Exception):
                 connection.unregister("_theme_rank_snapshot_rows")
-            except Exception:
-                pass
         if registered_audit:
-            try:
+            with contextlib.suppress(Exception):
                 connection.unregister("_theme_rank_audit_rows")
-            except Exception:
-                pass
 
 
 def _connect(database: duckdb.DuckDBPyConnection | Path | str) -> tuple[duckdb.DuckDBPyConnection, bool]:
@@ -350,6 +338,123 @@ def run_theme_rank_daily(
                     f"persisted {persisted_snapshot_id} != current source facts recomputed {fresh_m5_facts.input_snapshot_id}",
                 )
 
+            # 1. Verify persisted M5 count/ratio business arithmetic consistency
+            for _, row in m5_df.iterrows():
+                tid = str(row[THEME_ID])
+                mem_cnt = int(row["theme_member_count"])
+                hot_cnt = int(row["theme_hot_stock_count"])
+                hot_ratio = float(row["theme_hot_stock_ratio"])
+                app_cnt = int(row["theme_hot_list_appearance_count"])
+                src_cnt = int(row["theme_hot_source_count"])
+
+                if mem_cnt <= 0:
+                    raise SystemBThemeRankProductionError(
+                        "THEME_M5_ARITHMETIC_INCONSISTENT",
+                        f"theme {tid} theme_member_count {mem_cnt} <= 0",
+                    )
+                if hot_cnt < 0 or hot_cnt > mem_cnt:
+                    raise SystemBThemeRankProductionError(
+                        "THEME_M5_ARITHMETIC_INCONSISTENT",
+                        f"theme {tid} theme_hot_stock_count {hot_cnt} invalid for member count {mem_cnt}",
+                    )
+                expected_ratio = hot_cnt / mem_cnt
+                if abs(hot_ratio - expected_ratio) > 1e-6 or not (0.0 <= hot_ratio <= 1.0):
+                    raise SystemBThemeRankProductionError(
+                        "THEME_M5_ARITHMETIC_INCONSISTENT",
+                        f"theme {tid} hot_stock_ratio {hot_ratio} != {expected_ratio}",
+                    )
+                if hot_cnt == 0:
+                    if app_cnt != 0:
+                        raise SystemBThemeRankProductionError(
+                            "THEME_M5_ARITHMETIC_INCONSISTENT",
+                            f"theme {tid} appearance count {app_cnt} > 0 while hot stock count is 0",
+                        )
+                    if src_cnt != 0:
+                        raise SystemBThemeRankProductionError(
+                            "THEME_M5_ARITHMETIC_INCONSISTENT",
+                            f"theme {tid} hot source count {src_cnt} != 0 while hot stock count is 0",
+                        )
+                else:
+                    if app_cnt < hot_cnt:
+                        raise SystemBThemeRankProductionError(
+                            "THEME_M5_ARITHMETIC_INCONSISTENT",
+                            f"theme {tid} appearance count {app_cnt} < hot stock count {hot_cnt}",
+                        )
+                    if not (1 <= src_cnt <= 2):
+                        raise SystemBThemeRankProductionError(
+                            "THEME_M5_ARITHMETIC_INCONSISTENT",
+                            f"theme {tid} hot source count {src_cnt} not in [1, 2]",
+                        )
+
+            # 2. Align persisted M5 business outputs with fresh_m5_facts.observations
+            fresh_obs = fresh_m5_facts.observations
+            fresh_by_theme = {
+                str(r[THEME_ID]): r for _, r in fresh_obs.iterrows()
+            }
+            for _, p_row in m5_df.iterrows():
+                tid = str(p_row[THEME_ID])
+                f_row = fresh_by_theme.get(tid)
+                if f_row is None:
+                    raise SystemBThemeRankProductionError(
+                        "THEME_M5_BUSINESS_OUTPUT_MISMATCH",
+                        f"theme {tid} missing in fresh M5 observations",
+                    )
+                for field in (
+                    "theme_member_count",
+                    "theme_hot_stock_count",
+                    "theme_hot_list_appearance_count",
+                    "theme_hot_source_count",
+                ):
+                    if int(p_row[field]) != int(f_row[field]):
+                        raise SystemBThemeRankProductionError(
+                            "THEME_M5_BUSINESS_OUTPUT_MISMATCH",
+                            f"theme {tid} field {field} persisted {p_row[field]} != fresh {f_row[field]}",
+                        )
+                p_ratio = float(p_row["theme_hot_stock_ratio"])
+                f_ratio = float(f_row["theme_hot_stock_ratio"])
+                if abs(p_ratio - f_ratio) > 1e-6:
+                    raise SystemBThemeRankProductionError(
+                        "THEME_M5_BUSINESS_OUTPUT_MISMATCH",
+                        f"theme {tid} hot_stock_ratio persisted {p_ratio} != fresh {f_ratio}",
+                    )
+
+            # 3. Derive snapshot count/seq from fresh DC/THS rows and verify against availability
+            for src_key, raw_df in (
+                ("dc_hot", fresh_m5_facts.dc_hot),
+                ("ths_hot", fresh_m5_facts.ths_hot),
+            ):
+                if raw_df.empty:
+                    derived_seqs = []
+                else:
+                    derived_seqs = sorted({int(s) for s in raw_df["snapshot_seq"].dropna().unique()})
+                derived_count = len(derived_seqs)
+
+                avail_info = avail_by_source[src_key]
+                avail_count = int(avail_info.get("valid_snapshot_count", 0))
+                avail_seqs_raw = avail_info.get("snapshot_seqs", "[]")
+                if isinstance(avail_seqs_raw, str):
+                    avail_seqs = sorted(json.loads(avail_seqs_raw))
+                elif isinstance(avail_seqs_raw, (list, tuple)):
+                    avail_seqs = sorted(avail_seqs_raw)
+                else:
+                    avail_seqs = []
+
+                if derived_count != avail_count:
+                    raise SystemBThemeRankProductionError(
+                        "POPULARITY_SNAPSHOT_COUNT_MISMATCH",
+                        f"{src_key} fresh snapshot count {derived_count} != availability {avail_count}",
+                    )
+                if derived_seqs != avail_seqs:
+                    raise SystemBThemeRankProductionError(
+                        "POPULARITY_SNAPSHOT_SEQUENCE_MISMATCH",
+                        f"{src_key} fresh snapshot seqs {derived_seqs} != availability {avail_seqs}",
+                    )
+                if derived_count == 0:
+                    raise SystemBThemeRankProductionError(
+                        "POPULARITY_AVAILABLE_SOURCE_EMPTY",
+                        f"{src_key} is AVAILABLE in Path B but has 0 snapshots",
+                    )
+
         if execution_control is not None:
             execution_control.check()
 
@@ -374,23 +479,84 @@ def run_theme_rank_daily(
         if not episodes_df.empty:
             for d in episodes_df["episode_start_date"]:
                 parsed = pd.to_datetime(d).date()
-                if parsed < min_start_date:
-                    min_start_date = parsed
+                min_start_date = min(min_start_date, parsed)
 
         index_daily_df = connection.execute(
-            f"SELECT theme_id, collection_id, trade_date, index_level FROM {THEME_CUSTOM_INDEX_DAILY_TABLE} "
+            f"SELECT theme_id, collection_id, trade_date, index_level, calculation_version, input_snapshot_id FROM {THEME_CUSTOM_INDEX_DAILY_TABLE} "
             f"WHERE trade_date >= ? AND trade_date <= ?",
             [min_start_date, target],
         ).fetchdf()
 
         states_df = connection.execute(
-            f"SELECT theme_id, collection_id, trade_date, is_above_or_equal_ma5 FROM {THEME_CUSTOM_INDEX_STATE_TABLE} "
+            f"SELECT theme_id, collection_id, trade_date, is_above_or_equal_ma5, rule_version, input_snapshot_id FROM {THEME_CUSTOM_INDEX_STATE_TABLE} "
             f"WHERE trade_date >= ? AND trade_date <= ?",
             [min_start_date, target],
         ).fetchdf()
 
         if execution_control is not None:
             execution_control.check()
+
+        # Assemble comprehensive upstream lineage according to rc2 §12
+        if not is_pop_unavailable and m5_df is not None:
+            m5_lineage_payload = {
+                "path": "PATH_B_AVAILABLE",
+                "calculation_version": sorted(m5_df[CALCULATION_VERSION].unique()),
+                "production_run_id": sorted(m5_df[PRODUCTION_RUN_ID].dropna().unique()),
+                "persisted_input_snapshot_id": persisted_snapshot_id,
+                "recomputed_input_snapshot_id": fresh_m5_facts.input_snapshot_id,
+                "row_count": len(m5_df),
+            }
+        else:
+            m5_lineage_payload = {
+                "path": "PATH_A_UNAVAILABLE",
+                "calculation_version": None,
+                "production_run_id": None,
+                "persisted_input_snapshot_id": None,
+                "recomputed_input_snapshot_id": None,
+                "row_count": 0,
+            }
+
+        upstream_lineage = {
+            "c_d_provenance": {
+                "canonical_themes_count": len(canonical_themes),
+                "canonical_theme_ids": sorted(canonical_ids),
+                "fingerprint": hashlib.sha256(
+                    json.dumps(sorted(canonical_themes), sort_keys=True).encode("utf-8")
+                ).hexdigest(),
+            },
+            "m4_lineage": {
+                "calculation_version": sorted(m4_df[CALCULATION_VERSION].unique()) if not m4_df.empty else [],
+                "production_run_id": sorted(m4_df[PRODUCTION_RUN_ID].dropna().unique()) if not m4_df.empty else [],
+                "input_snapshot_id": sorted(m4_df[INPUT_SNAPSHOT_ID].dropna().unique()) if not m4_df.empty else [],
+                "row_count": len(m4_df),
+            },
+            "m5_lineage": m5_lineage_payload,
+            "theme_index_state_episode_lineage": {
+                "episodes": {
+                    "rule_versions": sorted(episodes_df["rule_version"].dropna().unique()) if not episodes_df.empty and "rule_version" in episodes_df else [],
+                    "input_snapshot_ids": sorted(episodes_df["input_snapshot_id"].dropna().unique()) if not episodes_df.empty and "input_snapshot_id" in episodes_df else [],
+                    "production_run_ids": sorted(episodes_df["production_run_id"].dropna().unique()) if not episodes_df.empty and "production_run_id" in episodes_df else [],
+                    "count": len(episodes_df),
+                },
+                "index_daily": {
+                    "calculation_versions": sorted(index_daily_df["calculation_version"].dropna().unique()) if not index_daily_df.empty and "calculation_version" in index_daily_df else [],
+                    "input_snapshot_ids": sorted(index_daily_df["input_snapshot_id"].dropna().unique()) if not index_daily_df.empty and "input_snapshot_id" in index_daily_df else [],
+                    "count": len(index_daily_df),
+                },
+                "index_state": {
+                    "rule_versions": sorted(states_df["rule_version"].dropna().unique()) if not states_df.empty and "rule_version" in states_df else [],
+                    "input_snapshot_ids": sorted(states_df["input_snapshot_id"].dropna().unique()) if not states_df.empty and "input_snapshot_id" in states_df else [],
+                    "count": len(states_df),
+                },
+            },
+            "popularity_availability": {
+                src: {
+                    k: (str(v) if isinstance(v, (date, datetime, pd.Timestamp)) else v)
+                    for k, v in avail_by_source[src].items()
+                }
+                for src in ("dc_hot", "ths_hot")
+            },
+        }
 
         # Execute pure calculation
         try:
@@ -406,6 +572,7 @@ def run_theme_rank_daily(
                 m5_observations=m5_df,
                 production_run_id=run_id,
                 created_at=now_ts,
+                upstream_lineage=upstream_lineage,
             )
         except ThemeRankingError as exc:
             raise SystemBThemeRankProductionError(exc.code, exc.detail) from exc

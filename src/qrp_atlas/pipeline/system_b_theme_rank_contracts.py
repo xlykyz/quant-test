@@ -59,7 +59,6 @@ from .system_b_theme_rank.service import (
     run_theme_rank_daily,
 )
 
-
 CHINA_TZ = ZoneInfo("Asia/Shanghai")
 QUANT_DB_RESOURCE = "quant_db"
 QUANT_DB_WRITER = "quant_db_writer"
@@ -136,7 +135,7 @@ def _inspect(
         if missing_columns:
             return CheckResult.failure(check_id, error_code, "required columns are missing", missing=missing_columns)
         return CheckResult.success(check_id, path=str(path), tables=list(tables))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return CheckResult.failure(check_id, error_code, "database could not be inspected", exception=type(exc).__name__)
     finally:
         if connection is not None:
@@ -178,7 +177,7 @@ def _quant_freshness(context: PipelineRunContext) -> CheckResult:
             is_open=is_open,
             noop=not is_open,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return CheckResult.failure(
             "system_b_theme_rank_quant_freshness",
             "THEME_RANK_QUANT_INPUT_STALE",
@@ -215,7 +214,7 @@ def _m4_freshness(context: PipelineRunContext) -> CheckResult:
             target_date=target.isoformat(),
             m4_row_count=count,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return CheckResult.failure(
             "system_b_theme_rank_m4_freshness",
             "THEME_RANK_M4_INPUT_STALE",
@@ -262,7 +261,7 @@ def _popularity_freshness(context: PipelineRunContext) -> CheckResult:
             target_date=target.isoformat(),
             sources=sources,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return CheckResult.failure(
             "system_b_theme_rank_popularity_freshness",
             "THEME_RANK_POPULARITY_AVAILABILITY_MISSING",
@@ -281,7 +280,7 @@ def _snapshot_completion(context: PipelineRunContext) -> CheckResult:
                 [target],
             ).fetchone()[0]
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return CheckResult.failure(
             "system_b_theme_rank_snapshot_completion",
             "THEME_RANK_SNAPSHOT_COMPLETION_MISSING",
@@ -307,7 +306,7 @@ def _audit_completion(context: PipelineRunContext) -> CheckResult:
                 [target],
             ).fetchone()[0]
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return CheckResult.failure(
             "system_b_theme_rank_audit_completion",
             "THEME_RANK_AUDIT_COMPLETION_MISSING",
@@ -338,7 +337,7 @@ def _quality(table_name: str, check_id: str, key_columns: tuple[str, ...], error
                 )
             finally:
                 connection.close()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return CheckResult.failure(check_id, error_code, "output uniqueness could not be checked", exception=type(exc).__name__)
         if duplicates:
             return CheckResult.failure(check_id, error_code, "duplicate output keys exist", duplicate_groups=duplicates)
@@ -549,8 +548,8 @@ SYSTEM_B_THEME_RANK_PRODUCTION_CONTRACT = SYSTEM_B_THEME_RANK_PRODUCTION
 SYSTEM_B_THEME_RANK_CONTRACTS = (SYSTEM_B_THEME_RANK_PRODUCTION,)
 
 __all__ = [
+    "SYSTEM_B_THEME_RANK_CONTRACTS",
     "SYSTEM_B_THEME_RANK_PRODUCTION",
     "SYSTEM_B_THEME_RANK_PRODUCTION_CONTRACT",
-    "SYSTEM_B_THEME_RANK_CONTRACTS",
     "SYSTEM_B_THEME_RANK_TARGET_DATE_POLICY",
 ]

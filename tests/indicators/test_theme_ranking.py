@@ -1,10 +1,7 @@
 """Targeted unit tests for Task06-B pure Theme Trend Rank calculations."""
 
 from datetime import date
-from fractions import Fraction
-import math
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -13,19 +10,10 @@ from qrp_atlas.contracts import (
     IS_ABOVE_OR_EQUAL_MA5,
     POPULARITY_AVAILABLE,
     POPULARITY_UNAVAILABLE,
-    RANK_ELIGIBLE,
     RANK_ELIGIBILITY_REASON,
-    THEME_COMPONENT_EPISODE_ABOVE_MA5_RATIO,
+    RANK_ELIGIBLE,
     THEME_COMPONENT_EPISODE_DURATION,
     THEME_COMPONENT_EPISODE_RETURN,
-    THEME_COMPONENT_HOT_APPEARANCE_RATE,
-    THEME_COMPONENT_HOT_STOCK_RATIO,
-    THEME_COMPONENT_LIMIT_UP_DIFFUSION,
-    THEME_COMPONENT_THEME_DAILY_RETURN,
-    THEME_DIMENSION_CURRENT_STRUCTURE,
-    THEME_DIMENSION_POPULARITY_SUPPORT,
-    THEME_DIMENSION_TREND_PERSISTENCE,
-    THEME_DIMENSION_TREND_STRENGTH,
     THEME_ID,
     THEME_RANK,
     THEME_RANK_ELIGIBLE,
@@ -36,7 +24,6 @@ from qrp_atlas.contracts import (
     THEME_RANK_NO_VARIATION,
     THEME_RANK_NOT_ELIGIBLE,
     THEME_RANK_OK,
-    THEME_RANK_UNAVAILABLE,
     THEME_SCORE,
     THEME_STATUS,
     TRADE_DATE,
@@ -214,7 +201,7 @@ def test_theme_ranking_singleton_insufficient_universe() -> None:
 
 
 def test_theme_ranking_path_a_trusted_unavailable_overrides_singleton() -> None:
-    d, themes, m4, episodes, index_daily, states, calendar, avail, m5 = _fixture_setup()
+    d, themes, m4, episodes, index_daily, states, calendar, avail, _m5 = _fixture_setup()
     avail["ths_hot"] = {"source_status": POPULARITY_UNAVAILABLE, "valid_snapshot_count": 0}
 
     # With N=1, UNAVAILABLE must take priority: status is INCOMPLETE_INPUT

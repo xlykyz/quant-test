@@ -8,12 +8,11 @@ and comprehensive component audit trails.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
-from fractions import Fraction
-import json
-import math
 from typing import Any
 
 import numpy as np
@@ -32,15 +31,16 @@ from qrp_atlas.contracts import (
     EVIDENCE,
     INDEX_LEVEL,
     INPUT_PROVENANCE,
+    INPUT_SNAPSHOT_ID,
     IS_ABOVE_OR_EQUAL_MA5,
     METADATA_JSON,
     NORMALIZED_RANK_SCORE,
     POPULARITY_AVAILABLE,
-    POPULARITY_UNAVAILABLE,
     POPULARITY_SUPPORT_SCORE,
+    POPULARITY_UNAVAILABLE,
     PRODUCTION_RUN_ID,
-    RANK_ELIGIBLE,
     RANK_ELIGIBILITY_REASON,
+    RANK_ELIGIBLE,
     RAW_RANK,
     RAW_VALUE,
     SOURCE_PROVENANCE,
@@ -334,6 +334,7 @@ def calculate_theme_ranking(
     m5_observations: pd.DataFrame | None = None,
     production_run_id: str = "theme_rank_run",
     created_at: Any = None,
+    upstream_lineage: Mapping[str, Any] | None = None,
 ) -> ThemeRankingResult:
     """Pure calculation of Task06-B Theme Rank for trade_date."""
     trade_date = _parse_date(trade_date)
@@ -415,8 +416,6 @@ def calculate_theme_ranking(
     # U_D = eligible themes
     eligible_themes: list[str] = []
     eligibility_map: dict[str, tuple[bool, str, str | None]] = {}  # theme_id -> (eligible, reason, episode_id)
-
-    open_days_set = set(trading_calendar_open_days)
 
     for theme_id in all_canonical_ids:
         collection_id = theme_to_collection[theme_id]
@@ -751,7 +750,7 @@ def calculate_theme_ranking(
                 leaf_def = LEAF_MAP[comp]
                 r_rank = float(component_ranks[comp].loc[tid])
                 q = 2 * u_d_size - 2 * r_rank
-                k_val += leaf_def.base_weight_int * int(round(q))
+                k_val += leaf_def.base_weight_int * round(q)
                 eff_w = leaf_def.base_weight / active_weight_sum
                 raw_s += eff_w * float(component_scores[comp].loc[tid])
             keys[tid] = k_val
@@ -858,12 +857,68 @@ def calculate_theme_ranking(
     # Construct Snapshot Rows (covering all C_D)
     snapshot_rows: list[dict[str, Any]] = []
 
+    base_weights_dict = {leaf.component: leaf.base_weight for leaf in LEAF_COMPONENTS}
+    effective_weights_dict = {
+        leaf.component: (round(leaf.base_weight / active_weight_sum, 6) if leaf.component in active_leaves else None)
+        for leaf in LEAF_COMPONENTS
+    }
+
+    upstream = dict(upstream_lineage or {})
+    c_d_hash = hashlib.sha256(
+        json.dumps(sorted(canonical_themes), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
     provenance_payload = {
         "trade_date": str(trade_date),
         "calculation_version": THEME_RANK_CALCULATION_VERSION,
-        "canonical_themes_count": total_canonical_count,
-        "u_d_size": u_d_size,
-        "popularity_source_statuses": source_statuses,
+        "c_d_provenance": upstream.get("c_d_provenance", {
+            "canonical_themes_count": total_canonical_count,
+            "canonical_theme_ids": sorted(all_canonical_ids),
+            "fingerprint": c_d_hash,
+        }),
+        "m4_lineage": upstream.get("m4_lineage", {
+            "calculation_version": sorted(m4_observations[CALCULATION_VERSION].unique()) if not m4_observations.empty and CALCULATION_VERSION in m4_observations else [],
+            "production_run_id": sorted(m4_observations[PRODUCTION_RUN_ID].dropna().unique()) if not m4_observations.empty and PRODUCTION_RUN_ID in m4_observations else [],
+            "input_snapshot_id": sorted(m4_observations[INPUT_SNAPSHOT_ID].dropna().unique()) if not m4_observations.empty and INPUT_SNAPSHOT_ID in m4_observations else [],
+            "row_count": len(m4_observations),
+        }),
+        "m5_lineage": upstream.get("m5_lineage", {
+            "calculation_version": sorted(m5_observations[CALCULATION_VERSION].unique()) if m5_observations is not None and not m5_observations.empty and CALCULATION_VERSION in m5_observations else [],
+            "production_run_id": sorted(m5_observations[PRODUCTION_RUN_ID].dropna().unique()) if m5_observations is not None and not m5_observations.empty and PRODUCTION_RUN_ID in m5_observations else [],
+            "persisted_input_snapshot_id": min(m5_observations[INPUT_SNAPSHOT_ID].dropna().unique()) if m5_observations is not None and not m5_observations.empty and INPUT_SNAPSHOT_ID in m5_observations else None,
+            "recomputed_input_snapshot_id": None,
+        }),
+        "theme_index_state_episode_lineage": upstream.get("theme_index_state_episode_lineage", {
+            "episodes": {
+                "rule_versions": sorted(episodes["rule_version"].dropna().unique()) if not episodes.empty and "rule_version" in episodes else [],
+                "input_snapshot_ids": sorted(episodes["input_snapshot_id"].dropna().unique()) if not episodes.empty and "input_snapshot_id" in episodes else [],
+                "production_run_ids": sorted(episodes["production_run_id"].dropna().unique()) if not episodes.empty and "production_run_id" in episodes else [],
+                "count": len(episodes),
+            },
+            "index_daily": {
+                "calculation_versions": sorted(index_daily["calculation_version"].dropna().unique()) if not index_daily.empty and "calculation_version" in index_daily else [],
+                "input_snapshot_ids": sorted(index_daily["input_snapshot_id"].dropna().unique()) if not index_daily.empty and "input_snapshot_id" in index_daily else [],
+                "count": len(index_daily),
+            },
+            "index_state": {
+                "rule_versions": sorted(states["rule_version"].dropna().unique()) if not states.empty and "rule_version" in states else [],
+                "input_snapshot_ids": sorted(states["input_snapshot_id"].dropna().unique()) if not states.empty and "input_snapshot_id" in states else [],
+                "count": len(states),
+            },
+        }),
+        "popularity_availability": {
+            src: {
+                k: (str(v) if isinstance(v, (date, datetime, pd.Timestamp)) else v)
+                for k, v in dict(popularity_availability.get(src, {})).items()
+            }
+            for src in ("dc_hot", "ths_hot")
+        },
+        "universe": {
+            "c_d_size": total_canonical_count,
+            "u_d_size": u_d_size,
+        },
+        "base_weights": base_weights_dict,
+        "effective_weights": effective_weights_dict,
         "active_leaves": active_leaves,
     }
     input_provenance_str = json.dumps(provenance_payload)
