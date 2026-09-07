@@ -35,7 +35,7 @@ from qrp_atlas.backtest.portfolio import (
     PortfolioExecutionRule,
     PortfolioSnapshot,
     StrategyPortfolioBacktestRun,
-    strategy_decisions_to_target_weights,
+    strategy_result_to_target_weights,
 )
 from qrp_atlas.contracts import ASSET_ID, TRADE_DATE
 from qrp_atlas.indicators.cross_section.conventions import normalize_trade_date
@@ -45,13 +45,13 @@ from qrp_atlas.indicators.cross_section.factors import (
     get_factor_definition,
 )
 from qrp_atlas.indicators.cross_section.universe import build_historical_universe
-from qrp_atlas.strategies import StrategyInput, get_strategy
+from qrp_atlas.strategies import StrategyInput, get_strategy, run_strategy_checked
 from qrp_atlas.strategies.models import StrategyRunResult
 from qrp_atlas.strategies.selection.rebalance import (
     REBALANCE_FREQUENCIES,
     build_rebalance_schedule,
 )
-from qrp_atlas.strategies.validation import resolve_parameters
+from qrp_atlas.strategies.validation import resolve_parameters, validate_strategy_result
 
 from .schemas import CreateBacktestTaskRequest
 from .timing import REASON_NO_EXECUTION_DATE_IN_RANGE, market_trade_dates
@@ -503,11 +503,14 @@ def run_cross_sectional_momentum_product_backtest(
             formal_trade_dates=formal_calendar,
         )
         strategy = get_strategy(request.strategy_code, request.strategy_version)
-        strategy_result = StrategyRunResult(
+        strategy_result = validate_strategy_result(
+            strategy.definition,
+            StrategyRunResult(
             strategy.definition,
             resolved,
             (),
             ("empty_historical_universe",),
+            ),
         )
         run = StrategyPortfolioBacktestRun(
             strategy_result=strategy_result,
@@ -591,7 +594,8 @@ def run_cross_sectional_momentum_product_backtest(
         prepared[ASSET_ID] = prepared["ticker"]
 
     strategy = get_strategy(request.strategy_code, request.strategy_version)
-    strategy_result = strategy.run(
+    strategy_result = run_strategy_checked(
+        strategy,
         StrategyInput(
             prepared_data=prepared,
             parameters=resolved,
@@ -602,7 +606,7 @@ def run_cross_sectional_momentum_product_backtest(
         )
     )
 
-    target_weights = strategy_decisions_to_target_weights(
+    target_weights = strategy_result_to_target_weights(
         strategy_result,
         max_positions=max_positions,
         max_weight_per_asset=max_weight,

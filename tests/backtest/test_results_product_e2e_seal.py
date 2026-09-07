@@ -338,6 +338,9 @@ def _assert_common_package(run_dir: Path) -> dict:
     assert "resolved_assets" in universe
     assert "data_fingerprints" in repro
     assert (repro.get("replay") or {}).get("supported") is True
+    strategy_result = repro.get("strategy_result") or {}
+    assert strategy_result.get("definition", {}).get("code") == repro.get("strategy_code")
+    assert "portfolio_targets" in strategy_result
     return {"summary": summary, "repro": repro}
 
 

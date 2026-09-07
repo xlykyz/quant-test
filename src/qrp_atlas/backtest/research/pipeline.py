@@ -13,7 +13,7 @@ from qrp_atlas.backtest.portfolio import (
     PortfolioBacktestConfig,
     PortfolioBacktestEngine,
     PortfolioBacktestResult,
-    strategy_decisions_to_target_weights,
+    strategy_result_to_target_weights,
     validate_target_weights,
 )
 from qrp_atlas.contracts import ASSET_ID, TRADE_DATE
@@ -270,7 +270,7 @@ def run_cross_section_research(
             max_positions = min(max_positions, int(portfolio_config.max_positions))
             max_weight = min(max_weight, float(portfolio_config.max_weight_per_asset))
 
-        target_weights = strategy_decisions_to_target_weights(
+        target_weights = strategy_result_to_target_weights(
             strategy_result,
             max_positions=max_positions,
             max_weight_per_asset=max_weight,

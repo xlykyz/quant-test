@@ -42,6 +42,7 @@ from .portfolio import (
     run_event_drift_portfolio_backtest,
     run_strategy_portfolio_backtest,
     strategy_decisions_to_target_weights,
+    strategy_result_to_target_weights,
 )
 from .runtime import StrategyBacktestRun, StrategyBacktestRuntime, prepare_strategy_data, run_strategy_backtest
 from .research import (
@@ -119,6 +120,7 @@ __all__ = [
     "summarize_index_components",
     "to_earnings_forecast_event_frame",
     "strategy_decisions_to_target_weights",
+    "strategy_result_to_target_weights",
     "CrossSectionResearchError",
     "CrossSectionResearchResult",
     "TargetExposureResult",

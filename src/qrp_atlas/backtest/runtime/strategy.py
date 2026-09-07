@@ -21,6 +21,7 @@ from qrp_atlas.strategies import (
     StrategyInput,
     StrategyRunResult,
     get_strategy,
+    run_strategy_checked,
 )
 from qrp_atlas.strategies.validation import resolve_parameters
 
@@ -104,7 +105,8 @@ class StrategyBacktestRuntime:
         strategy = get_strategy(code, version)
         resolved_parameters = resolve_parameters(strategy.definition, parameters or {})
         prepared = prepare_strategy_data(price_df, strategy.definition, resolved_parameters)
-        strategy_result = strategy.run(
+        strategy_result = run_strategy_checked(
+            strategy,
             StrategyInput(
                 prepared_data=prepared,
                 parameters=resolved_parameters,
@@ -112,6 +114,11 @@ class StrategyBacktestRuntime:
                 runtime_context=runtime_context or {},
             )
         )
+        if strategy_result.portfolio_targets:
+            raise ValueError(
+                "StrategyBacktestRuntime does not support native portfolio targets; "
+                "use a portfolio target backtest path"
+            )
         backtest_result = self._execute_decisions(
             price_df, strategy_result, config, initial_positions or {}
         )

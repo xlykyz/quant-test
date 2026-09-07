@@ -27,6 +27,7 @@ from .strategy import (
     run_event_drift_portfolio_backtest,
     run_strategy_portfolio_backtest,
     strategy_decisions_to_target_weights,
+    strategy_result_to_target_weights,
 )
 from .validators import validate_portfolio_config, validate_target_weights
 
@@ -55,6 +56,7 @@ __all__ = [
     "run_event_drift_portfolio_backtest",
     "run_strategy_portfolio_backtest",
     "strategy_decisions_to_target_weights",
+    "strategy_result_to_target_weights",
     "validate_portfolio_config",
     "validate_target_weights",
 ]

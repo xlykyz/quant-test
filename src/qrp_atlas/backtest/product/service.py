@@ -16,11 +16,11 @@ from qrp_atlas.backtest.data import load_index_prices, load_stock_prices
 from qrp_atlas.backtest.exposure_data import prepare_cross_section_exposure_panel
 from qrp_atlas.backtest.models import CostRule
 from qrp_atlas.backtest.portfolio import PortfolioBacktestConfig, PortfolioExecutionRule
-from qrp_atlas.backtest.portfolio.strategy import strategy_decisions_to_target_weights
+from qrp_atlas.backtest.portfolio.strategy import strategy_result_to_target_weights
 from qrp_atlas.backtest.portfolio.engine import PortfolioBacktestEngine
 from qrp_atlas.backtest.results import BacktestRunWriter
 from qrp_atlas.backtest.runtime.strategy import prepare_strategy_data
-from qrp_atlas.strategies import StrategyInput, get_strategy
+from qrp_atlas.strategies import StrategyInput, get_strategy, run_strategy_checked
 from qrp_atlas.strategies.registry import StrategyNotFoundError
 from qrp_atlas.strategies.validation import StrategyValidationError, resolve_parameters
 
@@ -421,7 +421,8 @@ def _run_product_portfolio(
             "no prepared strategy bars inside the requested date range"
         )
 
-    strategy_result = strategy.run(
+    strategy_result = run_strategy_checked(
+        strategy,
         StrategyInput(
             prepared_data=prepared_formal.reset_index(drop=True),
             parameters=resolved,
@@ -447,7 +448,7 @@ def _run_product_portfolio(
         "cross_sectional_momentum_long_only",
         "multifactor_long_only",
     }
-    signal_targets = strategy_decisions_to_target_weights(
+    signal_targets = strategy_result_to_target_weights(
         strategy_result,
         max_positions=config.max_positions,
         max_weight_per_asset=config.max_weight_per_asset,
@@ -535,6 +536,7 @@ def _build_reproducibility_snapshot(
     request: CreateBacktestTaskRequest,
     *,
     strategy: Any,
+    strategy_result: Any,
     portfolio_result: Any,
     cross_section_meta: dict[str, Any] | None = None,
     event_meta: dict[str, Any] | None = None,
@@ -561,6 +563,7 @@ def _build_reproducibility_snapshot(
         "strategy_code": strategy.definition.code,
         "strategy_version": strategy.definition.version,
         "strategy_definition_snapshot": definition,
+        "strategy_result": strategy_result.to_dict(),
         "strategy_params": dict(request.strategy_params or {}),
         "indicator_requests": definition.get("indicator_requests") or [],
         "universe": {
@@ -1037,6 +1040,7 @@ def execute_validated_task(
     repro_snapshot = _build_reproducibility_snapshot(
         request,
         strategy=strategy,
+        strategy_result=strategy_result,
         portfolio_result=portfolio_result,
         cross_section_meta=cross_section_meta,
         event_meta=locals().get("event_meta") if "event_meta" in locals() else None,
