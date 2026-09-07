@@ -1,39 +1,39 @@
 # Task07-B — System B Holding / Entry / Exit Decision 设计书
 
-> 状态：DESIGN DRAFT 1
+> 状态：DESIGN REVISION 1 / 待最终审查
 >
-> 分支基线：`develop/v1.1 @ ba302ae343ce95d52633d84456318238c572fa99`
+> 设计基线：`develop/v1.1 @ 11554e02618da1a901c423ed02bc99c290946c41`
 >
 > 前置：Task07-A 已完成并合并；typed holdings、checked runner、native full-snapshot portfolio target 与 canonical `StrategyRunResult` 已可用。
 >
-> 任务身份：Task07 的 System B 业务核心工作包之一。07-B 只冻结并实现 **持有 / 新增 / 加仓 / 退出的业务判断**；最终仓位、容量竞争、资金约束与完整 Portfolio Target 由 Task07-C 负责。
+> Revision 1：修正同日 EXIT 后误重新 ENTER 的生命周期漏洞；冻结 System-B-local prepared-input normalizer 与显式三态输入；补齐 `comparison_score` 同版本、同快照 provenance 合同。
 
 ---
 
 ## 1. 任务目标
 
-Task07-B 回答一个问题：
+Task07-B 回答：
 
-> **在给定当日市场授权、候选资格、统一比较分、严重异动状态和当前持仓的前提下，System B 对每只股票业务上应当 HOLD、ENTER、EXIT 还是 NO_ACTION？**
+> **在给定当日新增仓授权、候选资格、统一比较分、严重异动状态和初始持仓的前提下，System B 对每只股票应当 HOLD、ENTER、EXIT 还是 NO_ACTION？**
 
-本任务必须把以下已批准规则转成确定性策略判断：
+本任务只实现 System B 的 Holding / Entry / Exit Decision，不计算最终组合权重。
+
+必须落实：
 
 - 已有持仓每日继续评分，但评分、排名、M 身份和判断层变化本身不触发卖出；
-- 连续两个实际交易日收盘低于 MA5 → 全部退出该标的剩余持仓；
-- 严重异动监管期禁止开仓和加仓，但不因“处于监管期”本身自动清仓；
-- 新候选相对已有持仓存在严格评分门槛；
-- 已有持仓若仍为合格标的且处于最高评分层，可成为一次加仓候选；
+- 连续两个实际交易日收盘低于 MA5 → EXIT 全部剩余持仓；
+- 严重异动监管期禁止开仓和加仓，但监管期本身不自动清仓；
+- 新候选必须通过相对已有持仓评分门槛；
+- 已有持仓满足条件时可成为第二次买入候选；
 - 同一股票最多买入两次；
-- 同日先确认 EXIT，再用 retained holdings 参与新增判断；
-- 评分只控制新增资金，不替换、不挤出、不强制卖出已有持仓。
-
-07-B 不计算最终目标权重，也不处理实际成交可实现性。
+- 同日先确认 EXIT，再用 retained holdings 参与其他资产的新增判断；
+- **当日确认 EXIT 的资产，EXIT 是该资产当日终态，不得同日重新 ENTER。**
 
 ---
 
-## 2. 业务规则来源与优先级
+## 2. 业务规则来源
 
-System B 业务 SSOT 仍为：
+System B 业务 SSOT：
 
 ```text
 xlykyz/MyTradingSystem
@@ -41,88 +41,86 @@ source_commit = 82369650d16914e42c03da7635f410b12a38220e
 source_document = docs/15_交易系统2.0(初稿).md
 ```
 
-qrp-atlas 只做工程映射，不重新解释业务规则。
+Task07-B 不重新解释评分模型，也不发明未批准规则。
 
-Task07-B 使用以下已确认规则：
+当前已批准规则：
 
-1. 每日收盘后，候选与已有持仓使用同一评分口径；
-2. 评分下降、排名下降、失去 M1/M2/M3、题材授权变化、市场阶段变化、V 规则撤销新增仓授权，均不触发已有持仓卖出；
-3. 连续两个实际交易日收盘低于 MA5 才确认全部退出；
-4. 严重异动监管期禁止开仓与加仓；当前自动执行范围不包含严重异动减仓/清仓；
+1. 候选与已有持仓每日使用同一评分口径；
+2. 评分下降、排名下降、失去 M 身份、授权变化均不触发已有持仓退出；
+3. 连续两个实际交易日收盘低于 MA5 才确认 EXIT；
+4. 严重异动监管期禁止开仓和加仓；
 5. 新候选相对评分门槛：
-   - retained holdings = 0：不与持仓比较；
-   - retained holdings = 1—3：候选分数必须严格高于 retained holdings 最低分；
-   - retained holdings = 4—5：候选分数必须严格高于 retained holdings 全部分数，即严格高于最高分；
-   - retained holdings = 6：禁止新增不同股票；
-6. 高分新候选不得替换已有持仓；
-7. 当最高评分的合格标的是已有持仓，且该票仍允许加仓时，可作为第二次买入候选；
+   - retained=0：无持仓比较门槛；
+   - retained=1—3：严格高于最低持仓分；
+   - retained=4—5：严格高于全部持仓，即严格高于最高持仓分；
+   - retained>=6：禁止新增不同股票；
+6. 高分候选不得替换或强制卖出已有持仓；
+7. 最高评分层中的合格已有持仓可成为第二次买入候选；
 8. 同一股票最多买入两次。
 
 ---
 
-## 3. `comparison_score` 暂存假设（本任务明确保留）
+## 3. `comparison_score` 暂存假设
 
-### 3.1 当前事实
+### 3.1 未冻结内容
 
-Task06 已完成 Asset Rank / Theme Rank 等结果能力，但 System B 的最终统一综合评分公式、权重和 M1—M3 映射仍未批准。
+以下仍未批准，07-B 不得实现：
 
-因此 Task07-B **不得**：
+- 最终评分指标集合；
+- 指标归一化；
+- 权重；
+- 综合分公式；
+- M1/M2/M3 映射阈值。
 
-- 发明 M1/M2/M3 综合公式；
-- 设默认权重；
-- 用 rank 代替 score；
-- 用 M 身份映射出隐藏分数；
-- 将缺失分数静默视为 0。
+### 3.2 输入语义
 
-### 3.2 本任务输入假设
-
-Task07-B 暂时消费一个上游已解析字段：
+07-B 暂时消费：
 
 ```text
-comparison_score: finite numeric | unavailable
+comparison_score = finite float | UNAVAILABLE
 ```
 
-其语义仅为：
+仅表示：在同一 `trade_date`、同一评分规则/计算版本、同一输入快照下，对候选和持仓使用同一口径得到、可直接比较的统一分数。
 
-> 同一交易日、同一 System B 规则版本下，对候选与已有持仓使用同一口径生成、可直接进行严格大小比较的统一分数。
+不得：
 
-07-B 只消费，不解释其算法。
+- 用 rank 替代；
+- 用 M 身份反推；
+- 缺失值按 0；
+- 混用不同版本或不同 snapshot 的分数。
 
-### 3.3 Fail-closed
+### 3.3 Score fail-closed
 
-只要新增 / 加仓判断所需的比较分无法完整确定：
+新增 / 加仓所需 score 或 provenance 不完整时：
 
 ```text
 entry side = blocked
-reason = COMPARISON_SCORE_UNAVAILABLE
 ```
 
 但：
 
-- 已有持仓的 MA5 EXIT 仍必须正常判断；
-- 已有持仓若没有退出触发，不得因为 score 缺失自动卖出；
-- score 缺失不得改写历史持仓状态。
+- MA5 EXIT 继续正常判断；
+- 既有持仓不得因 score 问题被清零；
+- HOLD / EXIT 不依赖 comparison-score 完整性。
 
 ---
 
-## 4. Task07-B 与 07-C 的边界
+## 4. Task07-B 与 Task07-C 边界
 
-### 4.1 07-B 负责“该不该”
-
-07-B 负责：
+### 4.1 07-B 负责
 
 ```text
-current holdings
-+ exit facts
-+ authorization
-+ eligibility / veto
-+ comparison_score
-+ severe-abnormal supervision
+initial holdings
++ normalized exit status
++ authorization status
++ entry eligibility status
++ comparison score
++ severe-abnormal supervision status
 
-→ per-asset Holding / Entry / Exit Decision
+→ per-asset StrategyDecision
 ```
 
-输出只表达业务判断：
+输出：
 
 ```text
 ENTER
@@ -131,84 +129,159 @@ EXIT
 NO_ACTION
 ```
 
-### 4.2 07-C 负责“最终多少、最终选谁”
-
-07-C 才负责：
+### 4.2 07-C 负责
 
 - 每次 1/8 总资产；
-- 第一次 / 第二次买入的最终 target weight；
-- 计划 25%；
-- 单票 hard max <= 30%；
-- 多个 ENTER 候选同时竞争容量时的确定性 resolution；
-- 最多 6 只股票的最终组合约束；
+- 第二次买入后的计划 25%；
+- 单票 hard max <=30%；
+- 多个 ENTER 候选的容量竞争；
+- 最多 6 只的最终组合约束；
 - 现金不足；
-- 组合级优先级；
-- 完整 `StrategyPortfolioTarget` full snapshot。
+- 最终完整 `StrategyPortfolioTarget`。
 
-07-B **不得生成最终 target_weight**。
+07-B 不生成 `target_weight`。
 
-### 4.3 Execution 仍在下游
+### 4.3 Execution 下沉
 
-以下仍不属于 07-B：
-
-- T+1 / 次日集合竞价；
-- 停牌 / 涨跌停可成交性；
-- 100 股整数手；
-- 实际价格导致的现金可实现性；
-- 手续费 / 滑点；
-- OMS / broker / order / fill。
+07-B 不处理 T+1、集合竞价、停牌/涨跌停、整数手、成交价、手续费、订单或 Broker。
 
 ---
 
-## 5. 实现形态：System B 私有策略组件，不独立注册成 Product Strategy
+## 5. 实现形态
 
-Task07-B 是 Task07-C 的业务判断组件，不应成为一个可被通用 legacy decisions adapter 独立执行的半成品策略。
+07-B 实现为 **System-B-local deterministic policy component**，不是独立 Product Strategy。
 
 冻结：
 
-1. 07-B 实现为 **System B-local deterministic policy component**；
-2. 其输出使用既有 `StrategyDecision`；
-3. 07-B 本身不注册成独立 Product Strategy；
-4. 07-B 不单独生成 `StrategyRunResult.portfolio_targets`；
-5. Task07-C 的最终 System B strategy 调用 07-B，保留其 decisions，并生成 native full-snapshot portfolio target；
-6. 不新增 Common `BusinessIntent` / `PortfolioIntent` / `ADD` action 类型。
-
-这样避免：
-
-```text
-07-B intermediate ENTER/HOLD/EXIT
-→ 被 generic legacy adapter 误认为完整组合
-```
-
-也避免为了一个 System B 工作包扩张 Strategy Framework。
+1. 输出复用现有 `StrategyDecision`；
+2. 不新增 Common `ADD` action；
+3. 加仓仍使用 `StrategyAction.ENTER`，通过 reason/evidence 区分 `NEW` 与 `ADD`；
+4. 不生成 `StrategyRunResult.portfolio_targets`；
+5. 不改造 `system_b_basic`；
+6. 不建设 Strategy Framework v2。
 
 ---
 
-## 6. 输入合同
+## 6. System-B-local 输入合同
 
-### 6.1 评估单位
+### 6.1 为什么不能直接使用 Common strict validator
 
-Task07-B 按一个 canonical `trade_date` 做单日决策。
-
-输入资产域至少是：
+现有标准 `validate_strategy_input()` 会对 required fields / indicators 的 NA 直接 fail。07-B 又必须区分：
 
 ```text
-current holdings
-UNION
-当日 System B entry-side candidate universe
+NOT_TRIGGERED
+vs
+UNAVAILABLE
 ```
 
-同一 `trade_date + asset_id` 必须唯一。
+因此本任务冻结一个 **System-B-local prepared-input normalizer / immutable envelope**。
 
-### 6.2 Current holdings
+它只服务 System B，不注册成 Common validator plugin，不新增 `StrategyInputScope`。
 
-直接使用 Task07-A 已落地：
+逻辑形态：
+
+```text
+raw prepared facts
++ initial holdings
++ candidate asset ids
++ authorization
++ comparison-score provenance
+
+→ normalize_system_b_decision_input(...)
+
+→ immutable SystemBDecisionInput
+
+→ evaluate_system_b_holding_entry_exit(...)
+```
+
+### 6.2 单日 envelope
+
+一个 `SystemBDecisionInput` 只允许一个 canonical `trade_date`。
+
+至少包含：
+
+```text
+trade_date
+initial_holdings
+candidate_asset_ids
+authorization_status
+comparison_score_provenance
+asset_facts
+```
+
+输入资产域必须完整等于：
+
+```text
+initial_holding_asset_ids
+UNION
+candidate_asset_ids
+```
+
+每个 asset 必须恰好一条 normalized fact；不得 duplicate；不得因缺事实静默删除资产。
+
+### 6.3 显式状态合同
+
+#### Exit
+
+```text
+exit_status = TRIGGERED | NOT_TRIGGERED | UNAVAILABLE
+```
+
+映射规则：
+
+```text
+system_b_exit_triggered == True  → TRIGGERED
+system_b_exit_triggered == False → NOT_TRIGGERED
+上游事实缺失 / nullable unknown → UNAVAILABLE
+```
+
+禁止把缺失隐式转为 `False`。
+
+整个必需字段列不存在属于输入 schema error；已知资产的某日退出事实无法确定，则必须规范化为 `UNAVAILABLE`。
+
+#### Entry eligibility
+
+```text
+entry_eligibility_status = ELIGIBLE | INELIGIBLE | UNAVAILABLE
+```
+
+`UNAVAILABLE` 阻断该资产 NEW / ADD，不影响该资产既有持仓 EXIT。
+
+#### Authorization
+
+日级：
+
+```text
+authorization_status = AUTHORIZED | DENIED | UNAVAILABLE
+```
+
+`DENIED` / `UNAVAILABLE` 均阻断所有 NEW / ADD；不触发已有持仓 EXIT。
+
+#### Severe abnormal supervision
+
+```text
+supervision_status = ACTIVE | INACTIVE | UNAVAILABLE
+```
+
+只有 `INACTIVE` 允许 NEW / ADD。
+
+#### Comparison score
+
+```text
+comparison_score = finite float | None
+```
+
+`None` 唯一表示 unavailable；NaN / Inf 不允许进入 normalized envelope。
+
+### 6.4 Current holdings
+
+继续复用 Task07-A：
 
 ```python
 StrategyInput.holdings: Mapping[str, StrategyHoldingState]
 ```
 
-关键字段：
+07-B 实际需要：
 
 ```text
 asset_id
@@ -218,259 +291,259 @@ first_entry_date
 last_entry_date
 ```
 
-07-B 不新增 Account / quantity / cost / PnL 模型。
+不新增 quantity / cost / cash / account / PnL。
 
-### 6.3 每资产 prepared facts
+---
 
-逻辑上至少需要：
+## 7. Comparison-score provenance 合同
+
+### 7.1 Run-level provenance
+
+所有参与相对门槛或 top-score 判断的分数必须属于同一 provenance envelope，至少包含：
 
 ```text
 trade_date
-asset_id
-comparison_score
-entry_eligible
-exit_triggered
-severe_abnormal_supervision_status
+score_calculation_version
+rule_version_set_id
+parameter_set_id
+input_snapshot_id
 ```
 
-其中：
+其中 `trade_date` 必须与 `SystemBDecisionInput.trade_date` 一致。
 
-- `comparison_score`：上游已解析统一比较分；
-- `entry_eligible`：上游 eligibility + hard veto 后的最终 entry-side 资格，不在 07-B 重算股票池/M身份；
-- `exit_triggered`：canonical System B MA5 两日退出事实；
-- `severe_abnormal_supervision_status`：至少能区分 `ACTIVE / INACTIVE / UNAVAILABLE`。
+如果上游原始数据携带 row-level provenance，normalizer 必须验证参与比较的所有有效 score provenance 完全一致，再提升为 run-level provenance；不得混合后继续比较。
 
-允许携带额外审计字段，但不得改变以上 authority。
+### 7.2 缺失或不一致
 
-### 6.4 日级 authorization
-
-消费 Task05 已解析的新增仓授权：
+发生任一情况：
 
 ```text
-new_position_authorized: bool
-```
-
-及对应 reason / evidence。
-
-冻结：
-
-> **任何会增加风险敞口的操作——第一次买入和第二次加仓——都必须通过同一 entry-side authorization gate。**
-
-判断层撤销授权只阻断 ENTER，不触发 EXIT。
-
-### 6.5 严重异动状态未知
-
-如果候选 / 可加仓持仓的严重异动监管状态无法确定：
-
-```text
-不得 ENTER
-reason = SEVERE_ABNORMAL_STATUS_UNAVAILABLE
-```
-
-对于已有持仓：
-
-- 不因状态未知自动卖出；
-- MA5 EXIT 仍独立生效；
-- 必须保留 diagnostics / evidence，供人工审查。
-
----
-
-## 7. 固定决策顺序
-
-Task07-B 单日计算顺序冻结为：
-
-```text
-1. validate input
-2. evaluate current-holding EXIT
-3. build retained holdings
-4. preserve HOLD / unresolved-holding state
-5. evaluate entry-side global gates
-6. evaluate new-stock relative score threshold
-7. evaluate existing-stock ADD eligibility
-8. emit deterministic per-asset decisions
-```
-
-**EXIT 必须先于所有新增判断。**
-
-原因：同日已确认退出的股票不得继续占用：
-
-- retained holding count；
-- relative-score comparison set；
-- 后续 07-C 的 distinct-stock capacity。
-
-但退出只释放“业务目标容量”；现实成交是否成功仍由下游 Portfolio / Backtest 处理。
-
----
-
-## 8. 已有持仓决策
-
-### 8.1 EXIT authority
-
-07-B 不自行从价格重新计算 MA5。
-
-应优先复用既有 canonical fact：
-
-```text
-system_b_exit_triggered
-```
-
-冻结：
-
-```text
-held
-AND exit_triggered == true
-→ EXIT
-reason = MA5_TWO_ACTUAL_TRADING_DAYS_EXIT
-```
-
-退出为全部剩余持仓，具体 target=0 由 07-C full target 表达。
-
-### 8.2 HOLD
-
-若：
-
-```text
-held
-AND exit_triggered == false
-AND 未产生 ADD decision
+provenance missing
+provenance mismatch
+score trade_date mismatch
 ```
 
 则：
 
 ```text
-HOLD
+所有依赖 comparison_score 的 NEW / ADD fail-closed
 ```
 
-以下变化不能覆盖 HOLD：
-
-- comparison score 下降；
-- rank 下降；
-- M1/M2/M3 身份消失；
-- 题材失去主线身份；
-- phase B → A/C；
-- V rule 撤销新增仓授权；
-- 新候选分数更高。
-
-### 8.3 Exit fact unavailable
-
-如果 held asset 的 exit fact 无法确定：
+reason 至少区分：
 
 ```text
-NO_ACTION
-reason = EXIT_STATUS_UNAVAILABLE
+COMPARISON_SCORE_PROVENANCE_UNAVAILABLE
+COMPARISON_SCORE_PROVENANCE_MISMATCH
 ```
 
-语义为：
+HOLD / EXIT 仍独立执行。
 
-- 不确认退出；
-- 不确认正常 HOLD；
-- 07-C 必须保留当前 desired exposure，不得因缺数据清零；
-- 该票当日不得加仓；
-- 记录 diagnostics。
+### 7.3 审计
 
-该路径属于 fail-closed / no-fabrication，不得把 unavailable 当作 `exit_triggered=false`。
+凡 decision 使用了 comparison score，evidence 至少保存：
+
+```text
+comparison_score
+score_calculation_version
+rule_version_set_id
+parameter_set_id
+input_snapshot_id
+```
+
+保证可重放地证明“为什么这些分数当日可比较”。
 
 ---
 
-## 9. Retained Holdings
+## 8. 固定决策顺序
 
-定义：
+```text
+1. normalize + validate local input envelope
+2. evaluate initial-holding EXIT
+3. mark same-day EXIT assets terminal
+4. build retained holdings
+5. preserve HOLD / unresolved exposure state
+6. evaluate entry-side global gates
+7. evaluate NEW candidates against retained holdings
+8. evaluate ADD candidates among retained holdings
+9. emit deterministic decisions
+```
+
+EXIT 必须先于所有新增判断。
+
+---
+
+## 9. Initial Holdings / Retained Holdings / NEW 的严格定义
+
+### 9.1 Initial holdings
+
+```text
+initial_holdings = 本交易日策略评估开始前的持仓集合
+```
+
+该集合决定资产是否属于“原持仓”。
+
+### 9.2 Retained holdings
 
 ```text
 retained_holdings
 =
-initial holdings
+initial_holdings
 -
-当日已确认 EXIT 的 holdings
+当日 exit_status=TRIGGERED 的资产
 ```
 
-后续全部 entry comparison 都使用 retained holdings，而不是日初 holdings。
+retained holdings 用于：
+
+- 当日相对评分门槛；
+- ADD 判断；
+- 07-C distinct-stock capacity 的业务输入。
+
+### 9.3 NEW candidate
+
+NEW 必须定义为：
+
+```text
+asset_id in candidate_asset_ids
+AND asset_id not in initial_holdings
+```
+
+**不是** `asset_id not in retained_holdings`。
+
+因此：
+
+```text
+initially held
++ today EXIT
+→ remains an initial-holding asset identity for this trade_date
+→ cannot become NEW on the same day
+```
+
+### 9.4 EXIT 当日终态
+
+对同一资产：
+
+```text
+initially held
+AND exit_status=TRIGGERED
+→ EXIT
+```
 
 冻结：
 
-- 被 EXIT 的资产不参与新候选门槛；
-- 被 EXIT 的资产当日不得同时 ADD；
-- identity / score 变化本身不从 retained holdings 中移除资产；
-- `EXIT_STATUS_UNAVAILABLE` 的资产仍视为 retained，以避免虚假释放容量。
+- 当日不得 ADD；
+- 当日不得重新 ENTER；
+- 即使 `entry_eligible=ELIGIBLE`、authorization=AUTHORIZED、score 全市场最高，也只能输出 EXIT；
+- EXIT 仍从 retained holdings 移除，因此可为**其他资产**释放 distinct-stock capacity。
 
 ---
 
-## 10. New Entry 决策
+## 10. Holding / Exit Decision
 
-“新候选”定义：
+### 10.1 EXIT
 
 ```text
-asset_id not in retained_holdings
-AND entry_eligible == true
+asset in initial_holdings
+AND exit_status == TRIGGERED
+→ EXIT
+reason = MA5_TWO_ACTUAL_TRADING_DAYS_EXIT
 ```
 
-### 10.1 Global gates
+07-B 不重新计算 MA5，消费 canonical exit fact。
 
-任一条件不满足即不得 ENTER：
+### 10.2 HOLD
 
 ```text
-new_position_authorized == true
-entry_eligible == true
-severe_abnormal_supervision_status == INACTIVE
+asset in retained_holdings
+AND exit_status == NOT_TRIGGERED
+AND 未产生 ADD ENTER
+→ HOLD
+reason = POSITION_CONTINUES
+```
+
+评分/排名/M身份/市场授权变化不能单独覆盖 HOLD。
+
+### 10.3 EXIT unavailable
+
+```text
+asset in initial_holdings
+AND exit_status == UNAVAILABLE
+→ NO_ACTION
+reason = EXIT_STATUS_UNAVAILABLE
+```
+
+语义：
+
+- 不确认 EXIT；
+- 不把 unavailable 伪造为正常 HOLD；
+- 当日不得 ADD；
+- 07-C 必须保留当前 desired exposure；
+- 该资产仍计入 retained holdings，防止虚假释放容量。
+
+---
+
+## 11. Entry-side global gates
+
+任何增加风险敞口的 NEW / ADD 必须同时满足：
+
+```text
+authorization_status == AUTHORIZED
+entry_eligibility_status == ELIGIBLE
+supervision_status == INACTIVE
 comparison_score available
+comparison_score provenance valid
 ```
 
-其中 hard veto 已包含在 `entry_eligible` authority 中，高分不得覆盖 veto。
+任一 gate 不满足即阻断 entry side。
 
-### 10.2 Retained holdings = 0
-
-无相对持仓门槛。
-
-满足 global gates 的新候选：
+建议 reason：
 
 ```text
-ENTER
+NEW_POSITION_AUTHORIZATION_DENIED
+NEW_POSITION_AUTHORIZATION_UNAVAILABLE
+ENTRY_ELIGIBILITY_DENIED
+ENTRY_ELIGIBILITY_UNAVAILABLE
+SEVERE_ABNORMAL_SUPERVISION_BLOCKED
+SEVERE_ABNORMAL_STATUS_UNAVAILABLE
+COMPARISON_SCORE_UNAVAILABLE
+COMPARISON_SCORE_PROVENANCE_UNAVAILABLE
+COMPARISON_SCORE_PROVENANCE_MISMATCH
+```
+
+这些 gate 不产生 EXIT。
+
+---
+
+## 12. NEW Entry 相对评分门槛
+
+仅对 §9.3 定义的 NEW candidate 执行。
+
+### 12.1 retained = 0
+
+无持仓比较门槛；global gates 通过即可成为 ENTER candidate。
+
+```text
 reason = NEW_ENTRY_ELIGIBLE_NO_HOLDING_THRESHOLD
 ```
 
-多个候选同时通过时，07-B 不擅自只留一个；07-C 处理最终组合容量。
+### 12.2 retained = 1—3
 
-### 10.3 Retained holdings = 1—3
-
-要求全部 retained holdings 的 `comparison_score` 可用。
-
-门槛：
+所有 retained holdings 的有效 comparison score 必须齐全且 provenance 一致：
 
 ```text
 candidate_score > min(retained_holding_scores)
 ```
 
-严格 `>`；相等视为不通过。
+严格 `>`，相等不通过。
 
-通过：
-
-```text
-ENTER
-reason = NEW_ENTRY_ABOVE_MIN_HOLDING_SCORE
-```
-
-否则 `NO_ACTION`。
-
-### 10.4 Retained holdings = 4—5
-
-要求全部 retained holdings 的 `comparison_score` 可用。
-
-门槛：
+### 12.3 retained = 4—5
 
 ```text
 candidate_score > max(retained_holding_scores)
 ```
 
-即严格高于全部已有持仓；相等不通过。
+即严格高于全部 retained holdings；相等不通过。
 
-通过：
-
-```text
-ENTER
-reason = NEW_ENTRY_ABOVE_ALL_HOLDING_SCORES
-```
-
-### 10.5 Retained holdings >= 6
+### 12.4 retained >= 6
 
 禁止新增不同股票：
 
@@ -479,222 +552,174 @@ NO_ACTION
 reason = DISTINCT_HOLDING_CAP_REACHED
 ```
 
-注意：该规则只阻断“新增不同股票”，不阻断对已有持仓的第二次买入候选。
+### 12.5 Retained score coverage 不完整
 
-### 10.6 Retained score coverage 不完整
-
-当 retained holdings = 1—5 且任一 retained holding 缺少 comparison score：
+retained=1—5 且任一 retained holding score / provenance 不可用：
 
 ```text
-所有 NEW ENTRY fail-closed
+所有依赖相对门槛的 NEW fail-closed
 reason = RETAINED_HOLDING_SCORE_UNAVAILABLE
 ```
 
-不得只比较有分数的持仓子集。
+不得只比较可用子集。
+
+### 12.6 EXIT 释放容量示例
+
+日初 6 只持仓，其中 1 只确认 EXIT：
+
+```text
+initial_holdings = 6
+retained_holdings = 5
+```
+
+其他从未持有的新候选按 retained=5 的“严格高于全部 retained holdings”规则判断。
+
+被 EXIT 的原持仓自身不得重新 NEW。
 
 ---
 
-## 11. Add / Second Entry 决策
+## 13. ADD / Second Entry
 
-### 11.1 不新增 Common `ADD` Action
+### 13.1 Action 表达
 
-07-B 继续使用：
+不新增 Common `ADD`：
 
 ```text
 StrategyAction.ENTER
+entry_kind = ADD
 ```
 
-区分方式：
-
-```text
-asset already in retained_holdings
-+ reason_code = ADD_ENTRY_ELIGIBLE_TOP_SCORE
-```
-
-07-C 可通过 holdings + `entry_count` 确定这是第二次买入。
-
-### 11.2 基础条件
-
-已有持仓只有同时满足以下条件才进入 ADD 评估：
+### 13.2 ADD 基础条件
 
 ```text
 asset in retained_holdings
 entry_count == 1
-entry_eligible == true
-new_position_authorized == true
-severe_abnormal_supervision_status == INACTIVE
-exit status confirmed false
+exit_status == NOT_TRIGGERED
+authorization_status == AUTHORIZED
+entry_eligibility_status == ELIGIBLE
+supervision_status == INACTIVE
 comparison_score available
+comparison-score provenance valid
 ```
 
-`entry_count >= 2`：
+`entry_count >= 2` 不得再次 ENTER，只能 HOLD（若无 EXIT）。
+
+### 13.3 最高评分层
+
+entry-side qualified comparison universe：
 
 ```text
-不得再次 ENTER
-```
-
-但正常继续 HOLD。
-
-### 11.3 最高评分规则
-
-MyTradingSystem 当前规则为：
-
-> 当评分最高的合格标的是已有持仓股票时，可以再次执行一次固定 1/8 买入。
-
-07-B 定义 entry-side qualified comparison universe：
-
-```text
-所有满足 authorization / eligibility / veto / supervision / score-ready 的
-new candidates
+所有通过 global gates 的 NEW candidates
 UNION
-可加仓 retained holdings
+所有通过 ADD 基础条件的 retained holdings
 ```
-
-计算：
 
 ```text
 top_score = max(comparison_score)
 ```
 
-若可加仓持仓：
+可加仓持仓满足：
 
 ```text
 holding_score == top_score
 ```
 
-则：
+即可输出：
 
 ```text
 ENTER
+entry_kind = ADD
 reason = ADD_ENTRY_ELIGIBLE_TOP_SCORE
 ```
 
-否则维持 `HOLD`。
+### 13.4 同分
 
-### 11.4 同分
+业务规则未批准技术性 tie-breaker。
 
-当前业务规则未给出“最高分同分时只允许哪一只”的进一步裁决。
+多个资产同为 top score 时：
 
-因此 07-B **不得用 ticker 等技术字段伪造业务 tie-breaker**。
-
-如果多只资产同为最高分：
-
-- 07-B 保留同分业务事实；
-- 符合加仓基础条件的 co-top holding 均可输出 ENTER candidate；
-- 最终是否同时进入目标组合、如何占用组合容量，交给 07-C 的 deterministic constraint resolution；
-- 07-C 若发现必须在同分候选中二选一而业务规则仍未批准，不得静默使用 ticker 作为业务优先级，应显式 fail-closed 或记录 unresolved tie。
+- 07-B 保留 co-top 事实；
+- 不用 ticker 打破业务同分；
+- 符合条件的 co-top holding 均可成为 ADD candidate；
+- 最终容量冲突留给 07-C；
+- 07-C 如必须二选一且仍无业务 tie-breaker，应显式 unresolved/fail-closed，不得静默按 ticker 排业务优先级。
 
 ---
 
-## 12. 严重异动
+## 14. 严重异动
 
-### 12.1 自动化边界
-
-当前 qrp-atlas v1.1 只自动实现：
+当前 v1.1 自动范围只有：
 
 ```text
-监管期 ACTIVE
-→ 禁止开仓
-→ 禁止加仓
+supervision ACTIVE
+→ 禁止 NEW
+→ 禁止 ADD
 ```
 
-不自动实现：
+监管期本身不自动 EXIT。
 
-- I 类严重异动自动减仓 50%；
-- II 类严重异动自动清仓；
-- 任何等价自动执行。
+I 类减仓 50%、II 类清仓当前仍属人工处置，不由 07-B 自动生成交易动作。
 
-上述自动交易仍属于明确暂缓范围。
-
-### 12.2 已有持仓
-
-监管期本身：
+允许在 evidence 中保留：
 
 ```text
-held + supervision ACTIVE
-→ 不新增风险敞口
-→ 不因此自动 EXIT
-```
-
-MA5 EXIT 若同时触发，仍由 MA5 EXIT authority 正常产生 EXIT。
-
-### 12.3 Manual handling audit
-
-07-B 必须允许把上游严重异动人工处置状态/引用保留进 decision evidence，例如：
-
-```text
-severe_abnormal_supervision_status
 manual_handling_required
 manual_handling_status
 manual_handling_record_id
 ```
 
-若当前工程尚无正式人工处置持久化对象：
-
-- 07-B 只保留最小审计 hook / evidence；
-- 不借本任务建设 OMS / manual order system；
-- 不用“缺 record”解释为“已完成处置”。
+不借本任务建设 OMS / manual order system。
 
 ---
 
-## 13. Decision 输出合同
+## 15. Decision 输出合同
 
-07-B 对输入域每个 `trade_date + asset_id` 至多输出一个主 `StrategyDecision`。
+每个 `trade_date + asset_id` 至多一个主 `StrategyDecision`。
 
-### 13.1 Action
+### 15.1 Action
 
 ```text
-EXIT      已有持仓确认触发正式退出
-ENTER     新股票新增候选，或已有持仓第二次买入候选
-HOLD      已有持仓继续持有且当日不增加敞口
-NO_ACTION 未持有且不应新增，或输入不足导致 fail-closed
+EXIT      初始持仓确认正式退出
+ENTER     NEW 或 ADD 候选
+HOLD      retained holding 正常继续持有
+NO_ACTION 未持有且不新增，或持仓输入不足而保守保持 exposure
 ```
 
-### 13.2 `score`
+### 15.2 score / weight
 
 ```text
-StrategyDecision.score = comparison_score
-```
-
-若 unavailable：`None`。
-
-不得将 Asset Rank / M identity 偷换为该字段。
-
-### 13.3 `weight`
-
-07-B：
-
-```text
+StrategyDecision.score = comparison_score or None
 StrategyDecision.weight = None
 ```
 
-最终 weight 只由 07-C native portfolio target 决定。
+### 15.3 Evidence
 
-### 13.4 Evidence
-
-至少保留能够解释决策的事实子集：
+至少保存：
 
 ```text
-was_held
+was_initially_held
+was_retained
 entry_count
-exit_triggered
-entry_eligible
-new_position_authorized
-severe_abnormal_supervision_status
+exit_status
+entry_eligibility_status
+authorization_status
+supervision_status
 comparison_score
+comparison_score_provenance_valid
+score_calculation_version
+rule_version_set_id
+parameter_set_id
+input_snapshot_id
 retained_holding_count
 relative_score_threshold
 relative_score_passed
 entry_kind = NEW | ADD | NONE
+same_day_exit_terminal
 ```
-
-Evidence 仅记录已存在事实和已执行规则，不重新计算上游 score / rank / identity。
 
 ---
 
-## 14. Reason Code 基线
-
-建议冻结以下 System B reason codes：
+## 16. Reason Code 基线
 
 ```text
 MA5_TWO_ACTUAL_TRADING_DAYS_EXIT
@@ -706,175 +731,176 @@ NEW_ENTRY_ABOVE_MIN_HOLDING_SCORE
 NEW_ENTRY_ABOVE_ALL_HOLDING_SCORES
 NEW_ENTRY_SCORE_THRESHOLD_NOT_MET
 DISTINCT_HOLDING_CAP_REACHED
+SAME_DAY_EXIT_TERMINAL
 
 ADD_ENTRY_ELIGIBLE_TOP_SCORE
 ADD_ENTRY_NOT_TOP_SCORE
 ADD_ENTRY_LIMIT_REACHED
 
 NEW_POSITION_AUTHORIZATION_DENIED
+NEW_POSITION_AUTHORIZATION_UNAVAILABLE
 ENTRY_ELIGIBILITY_DENIED
+ENTRY_ELIGIBILITY_UNAVAILABLE
 SEVERE_ABNORMAL_SUPERVISION_BLOCKED
 SEVERE_ABNORMAL_STATUS_UNAVAILABLE
 COMPARISON_SCORE_UNAVAILABLE
+COMPARISON_SCORE_PROVENANCE_UNAVAILABLE
+COMPARISON_SCORE_PROVENANCE_MISMATCH
 RETAINED_HOLDING_SCORE_UNAVAILABLE
 ```
 
-实现允许按现有命名规范轻微调整，但不得合并掉不同业务原因。
+实现命名可轻微调整，但不同业务原因不得被折叠。
 
 ---
 
-## 15. Determinism
+## 17. Determinism
 
 冻结：
 
-- canonical `trade_date`；
+- 单个 canonical `trade_date`；
 - canonical `asset_id`；
-- 同日同资产输入唯一；
-- 输入排序不得影响决策；
-- 最终 decisions 按 `trade_date ASC, asset_id ASC` 稳定输出；
-- score 比较使用原值，不使用 ticker 破坏业务同分；
-- 严格门槛均使用 `>`，不是 `>=`；
-- 不允许 NaN / Inf 作为有效 comparison score；
-- 相同输入 + holdings + rule/config version 必须得到完全一致结果。
+- input domain 完整覆盖 initial holdings ∪ candidates；
+- 同日同资产唯一；
+- raw 输入顺序不影响结果；
+- decisions 按 `trade_date ASC, asset_id ASC` 稳定输出；
+- strict threshold 一律 `>`；
+- NaN / Inf 不作为有效 score；
+- 不用 ticker 破坏业务同分；
+- 相同 normalized envelope 必须得到完全一致结果。
 
 ---
 
-## 16. 与既有 `system_b_basic` 的关系
+## 18. 与既有 `system_b_basic` 的关系
 
-当前 `system_b_basic@1.0.0` 是早期架构验证策略，只基于：
+`system_b_basic@1.0.0` 继续作为 legacy/basic architecture fixture，不改造成完整 System B。
 
-```text
-system_b_trend_valid
-system_b_exit_triggered
-```
-
-直接生成简单 ENTER/HOLD/EXIT。
-
-Task07-B 不应把完整 System B 规则硬塞回该验证策略并改变其既有兼容语义。
-
-建议：
-
-- 保留 `system_b_basic` 作为 legacy/basic architecture fixture；
-- 新增 System B-local holding/entry/exit policy component；
-- Task07-C 再由正式 System B portfolio strategy 组合 Task05/06/07-B 结果并生成 native target。
+07-B 新增 System-B-local policy；07-C 的正式 System B portfolio strategy 再组合 Task05/06/07-B 输出并生成 native target。
 
 ---
 
-## 17. 明确非范围
+## 19. 明确非范围
 
-Task07-B 禁止实现：
+07-B 禁止实现：
 
-- `comparison_score` 综合公式；
-- M1/M2/M3 新权重或新阈值；
-- 新评分模型；
-- 1/8 最终 target weight；
+- comparison-score 公式；
+- 新评分权重 / 阈值；
+- 1/8 target weight；
 - 25% / 30% 最终组合计算；
-- 多 ENTER 候选最终容量排序；
+- multi-ENTER 最终容量 resolution；
 - full portfolio target；
-- quantity / 100 股整数手；
-- cash feasibility；
-- next-open execution；
-- suspension / limit execution rules；
+- quantity / integer lot / cash feasibility；
+- execution / order / broker；
 - 严重异动自动减仓/清仓；
-- Account / OMS / order / broker；
+- Common validator plugin registry；
+- 新 `StrategyInputScope`；
 - Strategy Framework v2；
-- 新 Common `ADD` action；
-- Task08 replay / Task09 daily product。
+- Task08 / Task09。
 
 ---
 
-## 18. 测试矩阵
+## 20. 测试矩阵
 
-### 18.1 Holding / Exit
+### 20.1 EXIT / HOLD
 
-至少覆盖：
+1. held + TRIGGERED → EXIT；
+2. held + NOT_TRIGGERED → HOLD；
+3. held + UNAVAILABLE → NO_ACTION + preserve exposure；
+4. score / rank / M身份下降不触发 EXIT；
+5. authorization denied 不触发 EXIT；
+6. supervision ACTIVE 本身不触发 EXIT；
+7. supervision ACTIVE + exit TRIGGERED → EXIT。
 
-1. held + exit=true → EXIT；
-2. held + exit=false → HOLD；
-3. held + exit unavailable → NO_ACTION + preserve exposure semantics；
-4. score下降不触发 EXIT；
-5. M身份变化不触发 EXIT；
-6. authorization撤销不触发 EXIT；
-7. severe supervision ACTIVE 不因监管期本身自动 EXIT；
-8. severe supervision ACTIVE + MA5 exit=true → EXIT。
+### 20.2 Same-day EXIT terminal
 
-### 18.2 New Entry Threshold
+1. `held + exit=TRIGGERED + entry eligible + authorization + supervision inactive + highest score` → **只输出 EXIT**；
+2. 上述资产不得出现 NEW 或 ADD；
+3. 6 只初始持仓退出 1 只后，其他新资产按 retained=5 判断；
+4. 被退出资产即使仍在 candidate set，也不得同日重新 ENTER。
+
+### 20.3 NEW threshold
 
 1. retained=0 → 无相对门槛；
-2. retained=1 → candidate > min passes；
-3. retained=1 → candidate == holding fails；
-4. retained=3 → 与最低分比较；
-5. retained=4 → 必须严格高于最高分；
-6. retained=5 → 必须严格高于最高分；
-7. retained=6 → 新不同股票被阻断；
-8. 当日先 EXIT 使 6→5 后，新候选按 retained=5 规则判断；
-9. retained score 缺失 → 所有依赖相对门槛的 new entry fail-closed。
+2. retained=1 → `candidate > holding` passes，`==` fails；
+3. retained=3 → 与最低分比较；
+4. retained=4/5 → 严格高于最高分；
+5. retained>=6 → 新不同股票阻断；
+6. retained score coverage 不完整 → NEW fail-closed。
 
-### 18.3 Add
+### 20.4 ADD
 
-1. held entry_count=1 + top qualified score → ENTER / ADD；
-2. held entry_count=2 → HOLD，不再加仓；
-3. top score 为新候选 → held 不加仓；
-4. authorization=false → 不加仓；
-5. supervision ACTIVE → 不加仓；
-6. supervision unavailable → 不加仓；
-7. exit=true → EXIT 优先，绝不同时 ADD；
-8. 6只 retained holdings 时，对已有持仓 ADD 仍可进入候选；
-9. co-top holdings 不使用 ticker 伪业务 tie-breaker。
+1. entry_count=1 + top qualified score → ENTER/ADD；
+2. entry_count=2 → HOLD；
+3. top score 为新候选 → 非 top held 不 ADD；
+4. authorization denied/unavailable → 不 ADD；
+5. supervision ACTIVE/UNAVAILABLE → 不 ADD；
+6. exit UNAVAILABLE → 不 ADD；
+7. co-top 不用 ticker tie-break。
 
-### 18.4 Missing / Invalid
+### 20.5 Local input normalization
 
-1. comparison_score NaN/Inf → unavailable；
-2. candidate score unavailable → candidate blocked；
-3. relevant score coverage incomplete → entry side fail-closed；
-4. duplicate trade_date+asset_id → fail；
-5. holdings asset 缺少当日 required exit fact → explicit unavailable path；
-6. invalid supervision status → fail。
+1. exit bool True → TRIGGERED；
+2. exit bool False → NOT_TRIGGERED；
+3. exit fact unknown → UNAVAILABLE；
+4. unknown 不得隐式转 False；
+5. invalid enum → fail；
+6. candidate / holding domain coverage 缺失 → fail；
+7. duplicate asset row → fail；
+8. comparison score NaN/Inf → unavailable/fail-normalization，不得作为有效值。
 
-### 18.5 Regression
+### 20.6 Provenance
+
+1. 同日同 version/snapshot score 可比较；
+2. provenance missing → NEW/ADD blocked，HOLD/EXIT unaffected；
+3. mixed `score_calculation_version` → NEW/ADD blocked；
+4. mixed `input_snapshot_id` → NEW/ADD blocked；
+5. trade_date mismatch → NEW/ADD blocked；
+6. decision evidence 保存 canonical provenance。
+
+### 20.7 Regression
 
 必须保证：
 
-- Task05 authorization regression；
-- Task06 Asset/Theme Rank regression；
-- Task07-A contract / checked runner regression；
-- `system_b_basic` legacy tests；
+- Task05 authorization；
+- Task06 Asset/Theme Rank；
+- Task07-A contract / checked runner；
+- `system_b_basic` legacy；
 - full regression。
 
 ---
 
-## 19. Definition of Done
+## 21. Definition of Done
 
-Task07-B 完成必须同时满足：
+Task07-B 完成必须满足：
 
-1. System B-local deterministic Holding / Entry / Exit policy 已实现；
-2. 不修改 `comparison_score` 业务算法；
-3. EXIT-first / retained-holdings 语义明确且有测试；
-4. 0 / 1—3 / 4—5 / 6 持仓相对评分门槛全部实现；
-5. 严格 `>` tie semantics 有测试；
-6. 允许已有持仓在最高评分层成为第二次买入候选；
-7. entry_count >= 2 不得继续加仓；
-8. authorization / eligibility / severe-abnormal supervision 能阻断 NEW 与 ADD；
-9. 上述 gate 不会误伤已有持仓 HOLD / MA5 EXIT；
-10. score / supervision / exit 输入不足均显式 fail-closed，不伪造事实；
-11. 不增加 Common `ADD` action，不扩大 Strategy Framework；
-12. 07-B 不生成最终 target weight / portfolio target；
-13. legacy `system_b_basic` 行为不被隐式改写；
-14. targeted regression + full regression 通过。
+1. System-B-local Holding / Entry / Exit policy 已实现；
+2. local input normalizer / immutable envelope 已实现，未扩张 Common Framework；
+3. exit/eligibility/authorization/supervision 的 unavailable 语义显式可执行；
+4. `system_b_exit_triggered` bool 正确映射到 exit tri-state；
+5. input domain 完整覆盖 initial holdings ∪ candidate universe；
+6. **同日 EXIT 为该资产终态，不得重新 ENTER/ADD**；
+7. EXIT-first + retained-holdings 语义有测试；
+8. 0 / 1—3 / 4—5 / 6 相对门槛实现；
+9. ADD 最高评分层与 max-two-buy 规则实现；
+10. comparison score provenance 缺失/混用 fail-closed；
+11. score/provenance 问题不影响 HOLD / EXIT；
+12. 不修改 comparison-score 算法；
+13. 不生成 target weight / portfolio target；
+14. `system_b_basic` 行为不被隐式改写；
+15. targeted + full regression 通过。
 
 ---
 
-## 20. Task07-C 接口预期
+## 22. Task07-C 接口预期
 
-Task07-C 将消费：
+Task07-C 消费：
 
 ```text
 StrategyInput.holdings
-+ Task07-B per-asset StrategyDecision
-+ comparison_score / priority evidence
++ Task07-B StrategyDecision
++ normalized comparison score / provenance
 ```
 
-并负责把：
+并把：
 
 ```text
 EXIT
@@ -883,38 +909,31 @@ ENTER(new)
 ENTER(add)
 ```
 
-确定性解析成：
-
-```text
-StrategyPortfolioTarget(full snapshot)
-```
+解析成完整 `StrategyPortfolioTarget`。
 
 07-C 必须继续遵守：
 
 - EXIT first；
+- same-day EXIT terminal；
 - 不替换 principle；
-- 1/8 entry increment；
+- 1/8 increment；
 - max two buys；
 - planned 25%；
 - hard max <=30%；
 - <=6 distinct stocks；
-- multi-candidate conflict resolution；
+- deterministic conflict resolution；
 - full snapshot authority。
 
 ---
 
-## 21. 当前唯一显式悬而未决项
-
-Task07-B 不再绕开比较接口，但仍保留以下正式未冻结项：
+## 23. 当前唯一业务悬而未决项
 
 ```text
 comparison_score 的具体计算公式
 ```
 
-本设计通过明确输入合同隔离该未决项。
+07-B 通过明确的 score + provenance 输入合同隔离该未决项。
 
 因此：
 
-> **Task07-B 可以在 comparison_score 由测试桩 / prepared upstream value 提供的条件下完整实现和验证；在真实生产路径没有 approved score model 时，entry-side 必须继续 fail-closed。**
-
-这不会阻塞 Holding / Exit 规则、相对门槛机制、加仓机制和后续 07-C 组合约束的工程实现。
+> **07-B 可以使用测试桩 / prepared upstream score 完整实现和验证；真实生产路径在 approved score model 缺失时必须阻断 NEW / ADD，但 Holding / Exit 仍可确定运行。**
