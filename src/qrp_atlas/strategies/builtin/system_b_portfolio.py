@@ -445,7 +445,7 @@ class SystemBPortfolioStrategy:
 
         raw_params = dict(strategy_input.parameters)
         authorization = strategy_input.runtime_context.get(
-            "authorization", raw_params.pop("authorization", True)
+            "authorization", raw_params.pop("authorization", None)
         )
         provenance = strategy_input.runtime_context.get(
             "comparison_score_provenance", raw_params.pop("comparison_score_provenance", None)

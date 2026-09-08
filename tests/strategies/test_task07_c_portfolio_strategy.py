@@ -213,3 +213,107 @@ def test_portfolio_target_converts_to_target_weights() -> None:
     records = weights_df.to_dict("records")
     # N1 has 0.125 target weight
     assert any(r["asset_id"] == "N1" and r["target_weight"] == 0.125 for r in records)
+
+
+def test_authorization_completely_missing_fails_closed_blocks_new_and_add() -> None:
+    # When authorization is missing from both runtime_context and parameters:
+    # must fail-closed to UNAVAILABLE, blocking NEW and ADD.
+    holdings = {
+        "H1": _holding("H1", 0.125),
+        "H2": _holding("H2", 0.125),
+    }
+    facts_df = _facts([
+        {"ticker": "H1", "system_b_exit_triggered": True, "comparison_score": 50.0},
+        {"ticker": "H2", "system_b_exit_triggered": False, "comparison_score": 100.0},
+        {"ticker": "N1", "comparison_score": 90.0},
+    ])
+
+    # Neither parameters nor runtime_context has "authorization"
+    strategy_input = StrategyInput(
+        prepared_data=facts_df,
+        holdings=holdings,
+        parameters={
+            "comparison_score_provenance": _provenance(),
+        },
+    )
+
+    result = run_strategy_checked(get_strategy("system_b_portfolio"), strategy_input)
+    decision_map = {d.asset_id: d for d in result.decisions}
+
+    # H1 exited normally
+    assert decision_map["H1"].action is StrategyAction.EXIT
+
+    # H2 cannot ADD -> HOLD with UNAVAILABLE
+    assert decision_map["H2"].action is StrategyAction.HOLD
+    assert decision_map["H2"].reason_code == "NEW_POSITION_AUTHORIZATION_UNAVAILABLE"
+
+    # N1 cannot NEW -> NO_ACTION with UNAVAILABLE
+    assert decision_map["N1"].action is StrategyAction.NO_ACTION
+    assert decision_map["N1"].reason_code == "NEW_POSITION_AUTHORIZATION_UNAVAILABLE"
+
+    # Target has zero new risk
+    assert len(result.portfolio_targets) == 1
+    target = result.portfolio_targets[0]
+    assert len(target.positions) == 1
+    assert target.positions[0].asset_id == "H2"
+    assert target.positions[0].target_weight == 0.125
+    assert target.positions[0].reason_code == POSITION_PRESERVED
+
+
+def test_authorization_explicit_false_blocks_new_and_add() -> None:
+    holdings = {"H1": _holding("H1", 0.125)}
+    facts_df = _facts([
+        {"ticker": "H1", "system_b_exit_triggered": False, "comparison_score": 100.0},
+        {"ticker": "N1", "comparison_score": 90.0},
+    ])
+
+    strategy_input = StrategyInput(
+        prepared_data=facts_df,
+        holdings=holdings,
+        parameters={
+            "authorization": False,
+            "comparison_score_provenance": _provenance(),
+        },
+    )
+
+    result = run_strategy_checked(get_strategy("system_b_portfolio"), strategy_input)
+    decision_map = {d.asset_id: d for d in result.decisions}
+
+    assert decision_map["H1"].action is StrategyAction.HOLD
+    assert decision_map["H1"].reason_code == "NEW_POSITION_AUTHORIZATION_DENIED"
+    assert decision_map["N1"].action is StrategyAction.NO_ACTION
+    assert decision_map["N1"].reason_code == "NEW_POSITION_AUTHORIZATION_DENIED"
+
+    target = result.portfolio_targets[0]
+    assert len(target.positions) == 1
+    assert target.positions[0].asset_id == "H1"
+    assert target.positions[0].target_weight == 0.125
+    assert target.positions[0].reason_code == POSITION_PRESERVED
+
+
+def test_authorization_runtime_context_takes_precedence_over_parameters() -> None:
+    holdings = {"H1": _holding("H1", 0.125), "H2": _holding("H2", 0.125)}
+    facts_df = _facts([
+        {"ticker": "H1", "system_b_exit_triggered": False, "comparison_score": 60.0},
+        {"ticker": "H2", "system_b_exit_triggered": False, "comparison_score": 40.0},
+        {"ticker": "N1", "comparison_score": 60.0},
+    ])
+
+    # runtime_context=True overrides parameters=False
+    strategy_input = StrategyInput(
+        prepared_data=facts_df,
+        holdings=holdings,
+        parameters={
+            "authorization": False,
+            "comparison_score_provenance": _provenance(),
+        },
+        runtime_context={
+            "authorization": True,
+        },
+    )
+
+    result = run_strategy_checked(get_strategy("system_b_portfolio"), strategy_input)
+    decision_map = {d.asset_id: d for d in result.decisions}
+    assert decision_map["H1"].action is StrategyAction.ENTER
+    assert decision_map["N1"].action is StrategyAction.ENTER
+
