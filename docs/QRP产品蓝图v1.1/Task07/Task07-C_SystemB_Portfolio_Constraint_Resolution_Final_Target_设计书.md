@@ -1,12 +1,14 @@
 # Task07-C — System B Portfolio Constraint Resolution & Final Target 设计书
 
-> 状态：DESIGN DRAFT 1 / 待对抗审查
+> 状态：DESIGN DRAFT 2 / IMPLEMENTATION READY
 >
-> 分支基线：`develop/v1.1 @ 793dce274422bca9244022bc0bc421402b2aed16`
+> 分支基线：`develop/v1.1 @ fbc1865b4b64708372905602974ca5f659120710`
 >
 > 前置：Task07-A 已完成 native full-snapshot Portfolio Target 合同；Task07-B 已完成 System-B-local Holding / Entry / Exit Decision。
 >
 > 任务身份：Task07 的最后一个业务工作包。07-C 只负责把 07-B 的资产级业务判断，在 System B 的组合容量与仓位约束下解析成唯一、完整、可审计的 desired `StrategyPortfolioTarget`。
+>
+> DRAFT 2 修订冻结：补齐普通 distinct-slot 容量耗尽与 cutoff tie 的诊断语义；权重容差统一为 `1e-12`；明确合同/不变量破损必须 fail-closed，而合法业务候选因组合约束未选中才进入 diagnostics；comparison score 同分采用 exact equality，禁止 `isclose`；正式挂载仅允许最小显式 System B input-normalizer 路由。
 
 ---
 
@@ -93,6 +95,8 @@ StrategyDecision.score
 StrategyDecision.reason_code
 StrategyDecision.evidence.entry_kind
 ```
+
+因此 canonical `07-B → 07-C` 链路中的 07-B 决策不变量属于 07-C 输入合同的一部分。若 07-C 收到一个按冻结 07-B 规则不可能产生的 ENTER intent，不得将其伪装成正常组合约束拒绝后继续运行，应 fail-closed。
 
 ### 3.3 07-C 只解决“约束后最终多少、最终选谁”
 
@@ -215,7 +219,7 @@ Mapping[str, StrategyHoldingState]
 07-C 进一步要求初始持仓总权重：
 
 ```text
-sum(current_weight) <= 1 + tolerance
+sum(current_weight) <= 1 + PORTFOLIO_WEIGHT_TOLERANCE
 ```
 
 若初始快照本身超过 100%，属于无效 portfolio state，resolver fail-closed，不通过偷偷卖出修复。
@@ -254,9 +258,92 @@ score = finite numeric
 entry_kind = NEW | ADD
 ```
 
+明确拒绝：
+
+```text
+None
+NaN
++inf
+-inf
+```
+
 且 evidence 必须能证明 07-B 已完成必要业务 gate。
 
 07-C 不重新推导 comparison score。
+
+### 6.6 Weight tolerance SSOT
+
+Task07-C 所有**权重边界**统一使用：
+
+```python
+PORTFOLIO_WEIGHT_TOLERANCE: float = 1e-12
+```
+
+用途仅限：
+
+```text
+portfolio gross-weight bound
+single-asset target-weight bound
+final target weight validation
+```
+
+其值必须与 Task07-A native portfolio-target validation 的 `1e-12` 保持严格一致，避免 07-C 自身接受、统一 checked validation 随后拒绝的双重口径。
+
+不得把该常量泛化成 `FLOAT_TOLERANCE`，也不得用于 comparison-score 同分判定。
+
+### 6.7 Failure taxonomy：合同破损 vs 业务约束拒绝
+
+07-C 必须区分两类失败：
+
+#### A. Contract / invariant violation → fail-closed
+
+属于系统级坏输入或上游冻结不变量被破坏，必须抛出统一策略校验异常（沿用现有 `StrategyValidationError` 边界），不得正常返回一个“看似合法”的降级 target。
+
+至少包括：
+
+```text
+trade_date mismatch
+strategy_code / strategy_version mismatch
+decisions 未完整覆盖要求的资产域
+同一 trade_date + asset_id 重复 decision
+initial portfolio gross > 1 + PORTFOLIO_WEIGHT_TOLERANCE
+retained_count > 6
+ENTER score 非 finite
+entry_kind 与持仓身份矛盾
+ADD 对应资产不在 retained holdings
+ADD 的 entry_count != 1
+canonical 07-B 链路中出现按冻结 07-B 规则不可能产生的 ENTER intent
+```
+
+特别冻结：
+
+```text
+entry_count >= 2 + ENTER(ADD)
+→ StrategyValidationError
+```
+
+该情形意味着 07-B / orchestration / input contract 回归，不得新增 `ADD_ENTRY_LIMIT_EXCEEDED` diagnostic 将其吞掉。
+
+#### B. Business constraint rejection → diagnostics
+
+候选 intent 本身合同合法、业务上允许参与组合解析，但最终因 07-C 负责的组合约束未被选中。此时不得 crash，原持仓按 full-snapshot 规则保留，并输出稳定 diagnostics。
+
+至少包括：
+
+```text
+ADD_SINGLE_ASSET_CAP_EXCEEDED
+NEW_DISTINCT_CAPACITY_INSUFFICIENT
+NEW_DISTINCT_CAPACITY_TIE_UNRESOLVED
+PORTFOLIO_WEIGHT_CAPACITY_INSUFFICIENT
+ENTER_WEIGHT_CAPACITY_TIE_UNRESOLVED
+```
+
+判定原则：
+
+```text
+坏合同 / 不可能状态 → exception
+合法 intent + 当前组合装不下 → diagnostic rejection
+```
 
 ---
 
@@ -367,10 +454,10 @@ HOLD → 强制改成 12.5% / 25%
 
 ### 9.2 30% 是新增风险 hard gate
 
-对于 ADD：
+对于**合同合法的 ADD candidate**：
 
 ```text
-current_weight + 0.125 <= 0.30 + tolerance
+current_weight + 0.125 <= 0.30 + PORTFOLIO_WEIGHT_TOLERANCE
 ```
 
 才允许最终选中。
@@ -387,6 +474,8 @@ reason / diagnostic：
 ```text
 ADD_SINGLE_ASSET_CAP_EXCEEDED
 ```
+
+注意：`entry_count != 1` 不属于本节业务 cap rejection，而属于 §6.7 的 contract / invariant violation。
 
 ---
 
@@ -457,7 +546,7 @@ sum(base desired weight of retained holdings)
 必须：
 
 ```text
-0 <= base_gross <= 1 + tolerance
+0 <= base_gross <= 1 + PORTFOLIO_WEIGHT_TOLERANCE
 ```
 
 ### 11.2 每个 ENTER 的增量
@@ -503,7 +592,7 @@ PORTFOLIO_WEIGHT_CAPACITY_INSUFFICIENT
 
 因此 07-C 不应“每天只买一个”。
 
-### 12.1 基本排序 authority
+### 12.1 基本排序 authority 与 score grouping
 
 只使用：
 
@@ -513,24 +602,64 @@ comparison_score DESC
 
 不得使用 ticker 作为业务 priority。
 
+同分定义冻结为：
+
+```text
+score_a == score_b
+```
+
+即 exact numeric equality。
+
+禁止：
+
+```text
+math.isclose
+abs(score_a - score_b) <= epsilon
+round(score, n) 后再分组
+```
+
+07-C 的 weight tolerance 与 comparison-score tie semantics 完全独立。ENTER score 必须在进入排序/分组前通过 finite validation，避免 NaN 破坏 equality / ordering。
+
 ### 12.2 NEW 的 slot resolution
 
 先只看 NEW candidates。
 
 按 score 从高到低按**同分组**处理。
 
-若一个 score group：
-
-```text
-group_size <= remaining_new_slots
-```
-
-则整个 group 进入下一步 gross-capacity resolution。
+#### Case A：普通容量已耗尽
 
 若：
 
 ```text
-group_size > remaining_new_slots
+remaining_new_slots == 0
+```
+
+则当前及更低分 NEW 均没有 distinct slot 可用。
+
+诊断：
+
+```text
+NEW_DISTINCT_CAPACITY_INSUFFICIENT
+```
+
+这不是 tie，不得误记为 `NEW_DISTINCT_CAPACITY_TIE_UNRESOLVED`。
+
+#### Case B：整组可容纳
+
+若：
+
+```text
+0 < group_size <= remaining_new_slots
+```
+
+则整个 group 进入下一步 gross-capacity resolution。
+
+#### Case C：真正 cutoff tie
+
+若：
+
+```text
+0 < remaining_new_slots < group_size
 ```
 
 则：
@@ -538,6 +667,7 @@ group_size > remaining_new_slots
 - 不允许用 ticker 从同分组中挑部分；
 - 该同分 NEW group 全部不选；
 - 更低分 NEW 也不得越级获得 slot；
+- NEW slot resolution 在该 cutoff 处停止继续向低分选择；
 - 记录 unresolved capacity tie。
 
 诊断：
@@ -545,6 +675,8 @@ group_size > remaining_new_slots
 ```text
 NEW_DISTINCT_CAPACITY_TIE_UNRESOLVED
 ```
+
+不新增 `LEAPFROG_PREVENTED` 作为必需业务码；“高分 unresolved tie 后低分不得越级”属于 resolution 控制流不变量。只有现有 diagnostics 合同明确要求为每个后续资产逐一给出拒绝 reason 时，才允许在不改变业务语义的前提下补充审计表达。
 
 ADD 不消耗 distinct slot，因此不因该 NEW-only tie 自动被拒绝。
 
@@ -560,7 +692,7 @@ individually-feasible ADD
 
 放入统一 ENTER pool。
 
-仍按 `comparison_score DESC` 的同分组处理。
+仍按 `comparison_score DESC` 的 exact-equality 同分组处理。
 
 若整个 score group 的固定 1/8 increments 都能装入剩余 target gross budget：
 
@@ -586,11 +718,11 @@ ENTER_WEIGHT_CAPACITY_TIE_UNRESOLVED
 
 ---
 
-## 13. Individual Feasibility Before Group Resolution
+## 13. Candidate Validation Before Group Resolution
 
-在 score-group 竞争前，07-C 先做每个 ENTER 的自身合法性校验。
+在 score-group 竞争前，07-C 先区分**输入不变量校验**与**组合业务可行性**。
 
-### NEW
+### 13.1 NEW structural invariants
 
 必须：
 
@@ -600,19 +732,44 @@ ENTER_WEIGHT_CAPACITY_TIE_UNRESOLVED
 - score finite；
 - 非 same-day EXIT asset。
 
-### ADD
+违反这些条件表示输入身份/07-B 冻结不变量矛盾，按 §6.7 fail-closed，而不是写一个普通 capacity rejection diagnostic。
+
+### 13.2 ADD structural invariants
 
 必须：
 
 - asset in retained holdings；
 - 07-B `entry_kind=ADD`；
-- entry_count == 1；
-- `current_weight + 0.125 <= 0.30 + tolerance`；
+- `entry_count == 1`；
 - score finite。
 
-不满足时只拒绝该 candidate，不重写 07-B 的原业务 decision。
+其中：
 
-07-C 的 target/diagnostics 记录为什么该 ENTER intent 没有进入最终目标。
+```text
+entry_count != 1
+ADD asset 不在 retained holdings
+entry_kind / holding identity 矛盾
+```
+
+均属于 contract / invariant violation，必须抛 `StrategyValidationError`。
+
+### 13.3 ADD business feasibility
+
+在 structural invariants 已通过后，再检查：
+
+```text
+current_weight + 0.125 <= 0.30 + PORTFOLIO_WEIGHT_TOLERANCE
+```
+
+若仅该条件失败：
+
+- 不增加 0.125；
+- 原持仓继续 `POSITION_PRESERVED`；
+- 07-B ENTER decision 保留；
+- 记录 `ADD_SINGLE_ASSET_CAP_EXCEEDED` diagnostic；
+- resolver 继续处理其他合法 candidates。
+
+07-C 不重写 07-B 的原业务 decision。
 
 ---
 
@@ -631,7 +788,19 @@ hash order
 
 决定谁获得稀缺 slot / weight budget。
 
-### 14.2 asset_id 只用于 canonical serialization
+### 14.2 Exact equality 是业务同分定义
+
+同分只认：
+
+```text
+comparison_score_a == comparison_score_b
+```
+
+不使用任何 tolerance / `math.isclose`。
+
+该规则定义的是 System B 的业务比较语义，而不是对浮点底层字节表示作额外架构保证。
+
+### 14.3 asset_id 只用于 canonical serialization
 
 最终 target positions 仍按：
 
@@ -643,7 +812,7 @@ asset_id ASC
 
 这只是输出顺序，不是业务 selection priority。
 
-### 14.3 Fail-closed 原则
+### 14.4 Fail-closed 原则
 
 当业务 score 无法区分、但容量又不足以容纳整个同分组时：
 
@@ -698,7 +867,7 @@ ENTER(NEW) selected        → 0.125
 ```text
 all weights finite
 0 < each position weight <= 1
-sum(weights) <= 1 + tolerance
+sum(weights) <= 1 + PORTFOLIO_WEIGHT_TOLERANCE
 positive distinct positions <= 6
 ```
 
@@ -763,7 +932,7 @@ input_snapshot_id
 07-C native portfolio target
 ```
 
-07-C 使用 `StrategyPortfolioTarget.diagnostics` 或上层 `StrategyRunResult.diagnostics` 记录约束拒绝。
+07-C 使用 `StrategyPortfolioTarget.diagnostics` 或上层 `StrategyRunResult.diagnostics` 记录**业务组合约束拒绝**。
 
 建议稳定诊断格式：
 
@@ -775,10 +944,19 @@ SYSTEM_B_TARGET_REJECTION|asset_id=<id>|reason=<CODE>
 
 ```text
 ADD_SINGLE_ASSET_CAP_EXCEEDED
+NEW_DISTINCT_CAPACITY_INSUFFICIENT
 NEW_DISTINCT_CAPACITY_TIE_UNRESOLVED
 PORTFOLIO_WEIGHT_CAPACITY_INSUFFICIENT
 ENTER_WEIGHT_CAPACITY_TIE_UNRESOLVED
 ```
+
+明确不新增：
+
+```text
+ADD_ENTRY_LIMIT_EXCEEDED
+```
+
+因为 `entry_count >= 2 + ADD` 已冻结为合同/不变量破损，应 fail-closed，不属于可继续运行的业务 constraint rejection。
 
 不为此新增新的 Common rejection model。
 
@@ -790,20 +968,23 @@ ENTER_WEIGHT_CAPACITY_TIE_UNRESOLVED
 
 ```text
 1. validate holdings + decisions contract
-2. identify same-day EXIT terminal assets
-3. build retained holdings / base desired weights
-4. validate retained_count and base_gross
-5. extract ENTER NEW / ADD intents
-6. reject individually-invalid ADD/NEW
-7. resolve NEW distinct slots by score groups
-8. resolve shared desired gross-weight budget by score groups
-9. apply selected 1/8 increments
-10. build full-snapshot target
-11. validate final invariants
-12. canonical sort + diagnostics
+2. validate 07-B ENTER structural invariants + finite scores
+3. identify same-day EXIT terminal assets
+4. build retained holdings / base desired weights
+5. validate retained_count and base_gross
+6. extract ENTER NEW / ADD intents
+7. reject contract-valid but business-infeasible ADD by single-asset cap
+8. resolve NEW distinct slots by exact-score groups
+9. resolve shared desired gross-weight budget by exact-score groups
+10. apply selected 1/8 increments
+11. build full-snapshot target
+12. validate final invariants with PORTFOLIO_WEIGHT_TOLERANCE
+13. canonical sort + diagnostics
 ```
 
 任何输入顺序不得改变结果。
+
+任何 contract / invariant violation 在进入正常 score-group capacity resolution 前 fail-closed。
 
 ---
 
@@ -867,7 +1048,27 @@ system_b_authorization
 
 现有 legacy/basic strategy 继续保持原语义。
 
-如果正式 Registry 挂载要求 checked runner 识别 System B local input contract，只允许增加最小显式路由；不引入新的通用 validator registry / Strategy Framework v2。
+### 20.1 Checked runner normalizer routing
+
+如果正式 Registry 挂载要求 `run_strategy_checked` 识别 System B local input contract，只允许增加与现有 special-case 模式一致的**最小显式 System B normalizer route**，使 System B 的 NA/None 与私有事实字段继续由现有 System B normalization 语义处理。
+
+允许：
+
+```text
+strategy_code == system_b_portfolio
+→ explicit System B input normalizer
+→ registered strategy runner
+```
+
+禁止借 Task07-C 新建：
+
+```text
+generic validator plugin registry
+StrategyInputNormalizerRegistry
+Strategy Framework v2
+```
+
+该接入只解决 System B 正式 checked-runner 挂载，不扩大 common abstraction surface。
 
 ---
 
@@ -878,7 +1079,7 @@ system_b_authorization
 1. HOLD → preserve current_weight；
 2. held NO_ACTION → preserve current_weight；
 3. EXIT → omitted；
-4. same-day EXIT + ENTER-looking evidence → 仍 omitted；
+4. same-day EXIT terminal asset 不得重新出现在 target；
 5. EXIT 后释放 NEW slot 给其他资产。
 
 ### 21.2 Fixed 1/8
@@ -889,21 +1090,22 @@ system_b_authorization
 4. 不允许 pro-rata；
 5. 0.1249 remaining budget 不允许 0.1249 entry。
 
-### 21.3 Single asset cap
+### 21.3 Single asset cap / ADD invariant
 
 1. current=0.125 + ADD → 0.25；
 2. current=0.175 + ADD → 0.30；
-3. current>0.175 + ADD → rejected；
+3. current>0.175 + contract-valid ADD → rejected，`ADD_SINGLE_ASSET_CAP_EXCEEDED`，原持仓保留；
 4. current>0.30 + HOLD → preserve，不自动 trim；
-5. entry_count>=2 即使错误传入 ADD intent也 fail/reject。
+5. `entry_count>=2 + ADD` → `StrategyValidationError` fail-closed，不生成 `ADD_ENTRY_LIMIT_EXCEEDED` diagnostic。
 
 ### 21.4 Distinct holdings
 
 1. retained=0，多 NEW 可进入直到约束上限；
-2. retained=5，只剩 1 NEW slot；
-3. retained=6，NEW 全拒绝，ADD仍可评估；
-4. initial=6 EXIT 1 → retained=5，可新增 1；
-5. retained>6 → fail-closed，不强制卖出修复。
+2. retained=5，score=95 NEW 成功占用唯一 slot，随后 score=80 NEW → `NEW_DISTINCT_CAPACITY_INSUFFICIENT`，不是 tie；
+3. retained=5，两个同为 score=95 的 NEW 竞争唯一 slot → 整组不选，`NEW_DISTINCT_CAPACITY_TIE_UNRESOLVED`；
+4. retained=6，NEW 因普通 slot exhaustion 拒绝，ADD仍可评估；
+5. initial=6 EXIT 1 → retained=5，可新增 1；
+6. retained>6 → fail-closed，不强制卖出修复。
 
 ### 21.5 Score priority
 
@@ -913,13 +1115,15 @@ system_b_authorization
 4. ADD 与 NEW 一起竞争 gross budget 时按 score authority；
 5. asset_id 不影响业务选择。
 
-### 21.6 Tie
+### 21.6 Tie / exact score semantics
 
-1. 2 个同分 NEW、2 slots → 两个都选；
-2. 2 个同分 NEW、1 slot → 两个都不选，diagnostic；
+1. 2 个 exact-equal score NEW、2 slots → 两个都选；
+2. 2 个 exact-equal score NEW、1 slot → 两个都不选，diagnostic；
 3. 上述情况下更低分 NEW 不得越级；
-4. 同分 group gross budget 只够部分 → 全组不选；
-5. 改变输入行顺序结果不变。
+4. exact-equal score group gross budget 只够部分 → 全组不选；
+5. 改变输入行顺序结果不变；
+6. 两个仅“非常接近”但不 exact equal 的 finite scores 不得因 `isclose` 被合并成 tie group；
+7. `NaN` / `+inf` / `-inf` ENTER score → fail-closed。
 
 ### 21.7 Gross target capacity
 
@@ -929,17 +1133,33 @@ system_b_authorization
 4. 若 score 产生明确优先级，最高者先获得 budget；
 5. cutoff tie 不按 ticker 拆分。
 
-### 21.8 Full snapshot
+### 21.8 Floating boundary alignment
+
+1. `sum(weights) == 1.0` → valid；
+2. `sum(weights) <= 1.0 + 1e-12` 的统一边界与 Task07-A checked validation 一致；
+3. `sum(weights) > 1.0 + 1e-12` → fail-closed；
+4. ADD 30% gate 使用同一 `PORTFOLIO_WEIGHT_TOLERANCE=1e-12`；
+5. comparison-score equality 不读取该 tolerance。
+
+### 21.9 Full snapshot
 
 1. final positive holdings 完整；
 2. EXIT omitted 意味 0；
 3. unselected NEW omitted；
 4. existing non-EXIT 不得丢失；
 5. positions asset_id ASC；
-6. sum<=1；
+6. sum<=1 + `1e-12`；
 7. distinct<=6。
 
-### 21.9 Regression
+### 21.10 Checked runner / orchestration
+
+1. `system_b_portfolio` 正式路径使用 System B local normalization；
+2. System B 合法 NA/None 事实不会被错误送入 generic strict normalizer 后误拒；
+3. `run_strategy_checked` 最终仍通过统一 result validation；
+4. 不引入 generic validator plugin registry；
+5. legacy `system_b_basic` / `system_b_authorization` 行为不变。
+
+### 21.11 Regression
 
 必须覆盖：
 
@@ -962,19 +1182,24 @@ Task07-C 完成必须满足：
 3. HOLD / held NO_ACTION preserve current exposure；
 4. NEW / ADD 固定 0.125 increment；
 5. 不主动把持仓重平衡到 12.5% / 25%；
-6. ADD 新增风险不得使 target 超过 30%；
-7. retained holdings / NEW 后 distinct <=6；
-8. target gross <=1；
-9. 容量不足时不缩放 fixed entry；
-10. 多候选按 comparison score authority 解析；
-11. cutoff score ties 不使用 ticker 伪优先级；
-12. 07-B decisions 与 07-C rejection audit 同时保留；
-13. target full snapshot 通过 Task07-A canonical validation；
-14. 不修改 comparison-score 算法；
-15. 不把整数手/价格/停牌/涨跌停/现实 cash feasibility 拉回 strategy 层；
-16. 不扩张 Strategy Framework；
-17. legacy `system_b_basic` 不回归；
-18. targeted + full regression 通过。
+6. contract-valid ADD 新增风险不得使 target 超过 30%，否则保留原仓并诊断拒绝；
+7. `entry_count>=2 + ADD` 等 07-B 不变量破损必须 fail-closed，不降级成 business diagnostic；
+8. retained holdings / NEW 后 distinct <=6；
+9. ordinary distinct-slot exhaustion 与 cutoff tie 使用不同诊断语义；
+10. target gross <=1，权重边界统一使用 `PORTFOLIO_WEIGHT_TOLERANCE=1e-12`；
+11. 容量不足时不缩放 fixed entry；
+12. 多候选按 comparison score authority 解析；
+13. comparison-score tie 使用 exact equality，不使用 `math.isclose` / weight tolerance；
+14. non-finite ENTER score fail-closed；
+15. cutoff score ties 不使用 ticker 伪优先级，且更低分不得 leapfrog；
+16. 07-B decisions 与 07-C business rejection audit 同时保留；
+17. target full snapshot 通过 Task07-A canonical validation；
+18. 不修改 comparison-score 算法；
+19. 不把整数手/价格/停牌/涨跌停/现实 cash feasibility 拉回 strategy 层；
+20. checked runner 仅增加最小显式 System B normalizer route（若正式 Registry 挂载需要）；
+21. 不扩张 Strategy Framework；
+22. legacy `system_b_basic` / `system_b_authorization` 不回归；
+23. targeted + full regression 通过。
 
 ---
 
