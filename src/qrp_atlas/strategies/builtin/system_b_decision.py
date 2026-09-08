@@ -533,7 +533,7 @@ def _normalize_supervision_status(value: Any) -> SystemBSupervisionStatus:
 
 
 def _normalize_score(value: Any) -> float | None:
-    if _is_missing(value):
+    if value is None:
         return None
     if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.integer, np.floating)):
         raise StrategyValidationError(f"comparison_score must be numeric or unavailable, got {value!r}")

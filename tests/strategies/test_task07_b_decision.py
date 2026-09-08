@@ -251,9 +251,10 @@ def test_duplicate_asset_row_fails_normalization() -> None:
         _evaluate([_row("A", 1.0), _row("A", 2.0)], candidates={"A"})
 
 
-def test_non_finite_score_is_not_accepted_as_valid_score() -> None:
+@pytest.mark.parametrize("score", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_score_is_not_accepted_as_valid_score(score: float) -> None:
     with pytest.raises(StrategyValidationError, match="finite"):
-        _evaluate([_row("A", float("inf"))], candidates={"A"})
+        _evaluate([_row("A", score)], candidates={"A"})
 
 
 def test_missing_provenance_blocks_entry_but_does_not_block_exit() -> None:
