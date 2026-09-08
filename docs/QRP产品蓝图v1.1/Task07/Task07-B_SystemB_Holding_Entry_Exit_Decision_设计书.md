@@ -1,12 +1,14 @@
 # Task07-B — System B Holding / Entry / Exit Decision 设计书
 
-> 状态：DESIGN REVISION 1 / 待最终审查
+> 状态：DESIGN REVISION 2 / 待最终审查
 >
 > 设计基线：`develop/v1.1 @ 11554e02618da1a901c423ed02bc99c290946c41`
 >
 > 前置：Task07-A 已完成并合并；typed holdings、checked runner、native full-snapshot portfolio target 与 canonical `StrategyRunResult` 已可用。
 >
 > Revision 1：修正同日 EXIT 后误重新 ENTER 的生命周期漏洞；冻结 System-B-local prepared-input normalizer 与显式三态输入；补齐 `comparison_score` 同版本、同快照 provenance 合同。
+>
+> Revision 2：修正合法 `comparison_score=0.0` 被 truthiness 表达式误转为 unavailable 的输出语义；冻结 score 原值透传，并补充 0.0 的 NEW / ADD / evidence 回归要求。
 
 ---
 
@@ -272,6 +274,8 @@ comparison_score = finite float | None
 ```
 
 `None` 唯一表示 unavailable；NaN / Inf 不允许进入 normalized envelope。
+
+**`0.0` 是合法 finite score，不得通过 truthiness 判断改写为 unavailable。**
 
 ### 6.4 Current holdings
 
@@ -688,9 +692,15 @@ NO_ACTION 未持有且不新增，或持仓输入不足而保守保持 exposure
 ### 15.2 score / weight
 
 ```text
-StrategyDecision.score = comparison_score or None
+StrategyDecision.score = comparison_score
 StrategyDecision.weight = None
 ```
+
+冻结：
+
+- `comparison_score is None` → `StrategyDecision.score = None`；
+- 任意 finite score（包括 `0.0`、负数或正数）必须原值透传；
+- 禁止 `comparison_score or None`、`if comparison_score` 等 truthiness 写法判断 unavailable。
 
 ### 15.3 Evidence
 
@@ -716,6 +726,8 @@ relative_score_passed
 entry_kind = NEW | ADD | NONE
 same_day_exit_terminal
 ```
+
+若 `comparison_score=0.0`，decision evidence 中也必须保留数值 `0.0`，不得写成 null / unavailable。
 
 ---
 
@@ -765,6 +777,7 @@ RETAINED_HOLDING_SCORE_UNAVAILABLE
 - decisions 按 `trade_date ASC, asset_id ASC` 稳定输出；
 - strict threshold 一律 `>`；
 - NaN / Inf 不作为有效 score；
+- `0.0` 是合法 score，必须与 `None` / unavailable 严格区分；
 - 不用 ticker 破坏业务同分；
 - 相同 normalized envelope 必须得到完全一致结果。
 
@@ -824,7 +837,8 @@ RETAINED_HOLDING_SCORE_UNAVAILABLE
 3. retained=3 → 与最低分比较；
 4. retained=4/5 → 严格高于最高分；
 5. retained>=6 → 新不同股票阻断；
-6. retained score coverage 不完整 → NEW fail-closed。
+6. retained score coverage 不完整 → NEW fail-closed；
+7. **NEW candidate `comparison_score=0.0` 在门槛条件成立时必须正常参与比较并输出 `StrategyDecision.score=0.0`，不得变成 unavailable。**
 
 ### 20.4 ADD
 
@@ -834,7 +848,8 @@ RETAINED_HOLDING_SCORE_UNAVAILABLE
 4. authorization denied/unavailable → 不 ADD；
 5. supervision ACTIVE/UNAVAILABLE → 不 ADD；
 6. exit UNAVAILABLE → 不 ADD；
-7. co-top 不用 ticker tie-break。
+7. co-top 不用 ticker tie-break；
+8. **ADD candidate `comparison_score=0.0` 且为有效 top score 时必须正常输出 ENTER/ADD，`StrategyDecision.score=0.0`。**
 
 ### 20.5 Local input normalization
 
@@ -845,7 +860,8 @@ RETAINED_HOLDING_SCORE_UNAVAILABLE
 5. invalid enum → fail；
 6. candidate / holding domain coverage 缺失 → fail；
 7. duplicate asset row → fail；
-8. comparison score NaN/Inf → unavailable/fail-normalization，不得作为有效值。
+8. comparison score NaN/Inf → unavailable/fail-normalization，不得作为有效值；
+9. comparison score `0.0` → 合法 finite score，必须保留为 `0.0`。
 
 ### 20.6 Provenance
 
@@ -854,7 +870,8 @@ RETAINED_HOLDING_SCORE_UNAVAILABLE
 3. mixed `score_calculation_version` → NEW/ADD blocked；
 4. mixed `input_snapshot_id` → NEW/ADD blocked；
 5. trade_date mismatch → NEW/ADD blocked；
-6. decision evidence 保存 canonical provenance。
+6. decision evidence 保存 canonical provenance；
+7. **comparison_score `0.0` 的 decision evidence 必须保存 `0.0`，不得序列化为 null。**
 
 ### 20.7 Regression
 
@@ -883,10 +900,11 @@ Task07-B 完成必须满足：
 9. ADD 最高评分层与 max-two-buy 规则实现；
 10. comparison score provenance 缺失/混用 fail-closed；
 11. score/provenance 问题不影响 HOLD / EXIT；
-12. 不修改 comparison-score 算法；
-13. 不生成 target weight / portfolio target；
-14. `system_b_basic` 行为不被隐式改写；
-15. targeted + full regression 通过。
+12. `comparison_score=0.0` 与 unavailable 严格区分并原值写入 decision/evidence；
+13. 不修改 comparison-score 算法；
+14. 不生成 target weight / portfolio target；
+15. `system_b_basic` 行为不被隐式改写；
+16. targeted + full regression 通过。
 
 ---
 
