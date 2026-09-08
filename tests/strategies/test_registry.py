@@ -56,6 +56,7 @@ def test_definition_is_serializable_and_builtin_is_registered() -> None:
         "stochastic_mean_reversion",
         "system_b_authorization",
         "system_b_basic",
+        "system_b_portfolio",
         "time_series_momentum",
         "volatility_adjusted_momentum",
         "volume_confirmed_ema_trend",
