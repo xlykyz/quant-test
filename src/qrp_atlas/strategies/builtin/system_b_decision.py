@@ -107,7 +107,6 @@ class SystemBDecisionInput:
     asset_facts: Mapping[str, SystemBAssetDecisionFact]
 
 
-
 def normalize_system_b_decision_input(
     prepared_facts: pd.DataFrame,
     *,
@@ -413,10 +412,46 @@ def _normalize_holdings(
             raise StrategyValidationError("System B holdings must contain StrategyHoldingState values")
         if state.asset_id != asset_id:
             raise StrategyValidationError("System B holding key must equal state.asset_id")
-        if isinstance(state.entry_count, bool) or state.entry_count < 1:
-            raise StrategyValidationError("System B holding entry_count must be >= 1")
+        if (
+            isinstance(state.current_weight, bool)
+            or not isinstance(state.current_weight, (int, float))
+            or not math.isfinite(float(state.current_weight))
+            or float(state.current_weight) <= 0
+        ):
+            raise StrategyValidationError(
+                "System B holding current_weight must be a positive finite number"
+            )
+        if (
+            isinstance(state.entry_count, bool)
+            or not isinstance(state.entry_count, int)
+            or state.entry_count < 1
+        ):
+            raise StrategyValidationError(
+                "System B holding entry_count must be an integer >= 1"
+            )
+        first_entry = _normalize_holding_date(state.first_entry_date, "first_entry_date")
+        last_entry = _normalize_holding_date(state.last_entry_date, "last_entry_date")
+        if first_entry is not None and last_entry is not None and first_entry > last_entry:
+            raise StrategyValidationError(
+                "System B holding first_entry_date must be on or before last_entry_date"
+            )
         normalized[asset_id] = state
     return normalized
+
+
+def _normalize_holding_date(value: Any, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) != 10:
+        raise StrategyValidationError(
+            f"System B holding {field_name} must be an exact YYYY-MM-DD string"
+        )
+    parsed = pd.to_datetime(value, errors="coerce", format="%Y-%m-%d")
+    if pd.isna(parsed) or parsed.strftime("%Y-%m-%d") != value:
+        raise StrategyValidationError(
+            f"System B holding {field_name} must be an exact YYYY-MM-DD string"
+        )
+    return value
 
 
 def _normalize_asset_ids(
