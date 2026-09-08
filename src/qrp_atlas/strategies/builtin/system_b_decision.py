@@ -11,6 +11,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from types import MappingProxyType
 from typing import Any
 
 import numpy as np
@@ -203,11 +204,11 @@ def normalize_system_b_decision_input(
 
     return SystemBDecisionInput(
         trade_date=trade_date,
-        initial_holdings=normalized_holdings,
+        initial_holdings=MappingProxyType(dict(normalized_holdings)),
         candidate_asset_ids=normalized_candidates,
         authorization_status=authorization_status,
         comparison_score_provenance=provenance,
-        asset_facts=facts,
+        asset_facts=MappingProxyType(dict(facts)),
     )
 
 
@@ -513,7 +514,27 @@ def _normalize_score_provenance(
     prepared: pd.DataFrame,
 ) -> SystemBComparisonScoreProvenance:
     if isinstance(raw, SystemBComparisonScoreProvenance):
-        base = raw
+        required_values = (
+            raw.trade_date,
+            raw.score_calculation_version,
+            raw.rule_version_set_id,
+            raw.parameter_set_id,
+            raw.input_snapshot_id,
+        )
+        if raw.status is SystemBScoreProvenanceStatus.VALID and any(
+            value is None or (isinstance(value, str) and not value.strip())
+            for value in required_values
+        ):
+            base = SystemBComparisonScoreProvenance(
+                trade_date=raw.trade_date,
+                score_calculation_version=raw.score_calculation_version,
+                rule_version_set_id=raw.rule_version_set_id,
+                parameter_set_id=raw.parameter_set_id,
+                input_snapshot_id=raw.input_snapshot_id,
+                status=SystemBScoreProvenanceStatus.UNAVAILABLE,
+            )
+        else:
+            base = raw
     elif raw is None:
         base = SystemBComparisonScoreProvenance(
             trade_date=None,
