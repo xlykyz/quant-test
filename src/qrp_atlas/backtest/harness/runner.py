@@ -359,8 +359,16 @@ def back(
     if subject_type == SubjectType.FACTOR:
         assert factor_spec is not None
         assert factor_df is not None
+
+        # Minimal orientation adaptation: invert factor values if lower_is_better
+        research_factor_df = factor_df.copy()
+        if factor_spec.direction == "lower_is_better":
+            research_factor_df[factor_spec.field] = -pd.to_numeric(
+                research_factor_df[factor_spec.field], errors="coerce"
+            )
+
         research_res = run_cross_section_research(
-            factor_frame=factor_df,
+            factor_frame=research_factor_df,
             price_df=price_df,
             trading_days=trading_days,
             factor_columns=[factor_spec.field],

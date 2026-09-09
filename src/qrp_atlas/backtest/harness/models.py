@@ -144,6 +144,21 @@ class ExperimentSpec:
                 f"ExperimentSpec.score must be str or dict of weights, got: {type(self.score).__name__}"
             )
 
+        # Rank validation
+        if not isinstance(self.rank, Mapping):
+            raise HarnessValidationError("ExperimentSpec.rank must be a mapping")
+        rank_by = str(self.rank.get("by", "")).strip()
+        if rank_by != "score":
+            raise HarnessValidationError(
+                f"ExperimentSpec.rank['by'] must be 'score', got: {self.rank.get('by')!r}. "
+                "Task08 v1.1 freezes ranking on the computed score."
+            )
+        rank_order = str(self.rank.get("order", "")).strip().lower()
+        if rank_order not in {"asc", "desc"}:
+            raise HarnessValidationError(
+                f"ExperimentSpec.rank['order'] must be 'asc' or 'desc', got: {self.rank.get('order')!r}"
+            )
+
         # Portfolio validation
         top_n = self.portfolio.get("top_n")
         if top_n is None or int(top_n) <= 0:

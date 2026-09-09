@@ -57,6 +57,20 @@ def test_experiment_spec_validation():
     with pytest.raises(HarnessValidationError, match="positive integer 'top_n'"):
         ExperimentSpec(score="m", portfolio={"top_n": 0})
 
+    # Rank validation tests
+    with pytest.raises(HarnessValidationError, match="rank\\['by'\\] must be 'score'"):
+        ExperimentSpec(score="m", rank={"by": "pb", "order": "desc"})
+
+    with pytest.raises(HarnessValidationError, match="rank\\['order'\\] must be 'asc' or 'desc'"):
+        ExperimentSpec(score="m", rank={"by": "score", "order": "foobar"})
+
+    # Valid ranks
+    spec_asc = ExperimentSpec(score="m", rank={"by": "score", "order": "asc"})
+    assert spec_asc.rank["order"] == "asc"
+
+    spec_desc = ExperimentSpec(score="m", rank={"by": "score", "order": "desc"})
+    assert spec_desc.rank["order"] == "desc"
+
 
 def test_filter_predicate_whitelist():
     pred = FilterPredicate("pe", "lt", 30)

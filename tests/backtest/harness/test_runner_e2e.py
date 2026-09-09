@@ -125,3 +125,50 @@ def test_reproducibility_same_request_produces_identical_hash():
 
     assert run_a.provenance["config_hash"] == run_b.provenance["config_hash"]
     assert run_a.summary_metrics["final_equity"] == run_b.summary_metrics["final_equity"]
+
+
+def test_factor_direction_inverts_orientation():
+    """Verify FactorSpec.direction inverts orientation metrics (e.g. IC has opposite sign)."""
+    prices_df, factors_df = _make_e2e_dataset()
+    universe = ["000001.SZ", "000002.SZ", "000003.SZ", "600000.SH", "600001.SH"]
+    period = ("2024-01-02", "2024-01-15")
+
+    # Higher is better
+    res_high = back(
+        period=period,
+        universe=universe,
+        factor={
+            "field": "momentum_20d",
+            "direction": "higher_is_better",
+            "horizons": [5],
+            "quantiles": 2,
+        },
+        data={"prices": prices_df, "factors": factors_df},
+    )
+
+    # Lower is better
+    res_low = back(
+        period=period,
+        universe=universe,
+        factor={
+            "field": "momentum_20d",
+            "direction": "lower_is_better",
+            "horizons": [5],
+            "quantiles": 2,
+        },
+        data={"prices": prices_df, "factors": factors_df},
+    )
+
+    assert res_high.status == "SUCCESS"
+    assert res_low.status == "SUCCESS"
+
+    # Mean IC must have opposite sign
+    ic_high = res_high.summary_metrics["ic_mean_5"]
+    ic_low = res_low.summary_metrics["ic_mean_5"]
+    assert ic_high is not None and ic_low is not None
+    assert abs(ic_high + ic_low) < 1e-6
+    assert abs(ic_high) > 1e-4
+
+    # Ensure original factor dataframe was not mutated
+    assert (factors_df["momentum_20d"] > 0).all()
+

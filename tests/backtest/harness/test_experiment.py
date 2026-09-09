@@ -69,3 +69,17 @@ def test_missing_column_fails_fast():
     spec = ExperimentSpec(score="unknown_field")
     with pytest.raises(HarnessValidationError, match="missing from factor_df"):
         evaluate_experiment_rules(df, spec)
+
+
+def test_ascending_rank_order_selection():
+    df = _sample_factor_df()
+    spec = ExperimentSpec(
+        score="momentum_20d",
+        portfolio={"top_n": 1, "weight_each": 1.0},
+        rank={"by": "score", "order": "asc"},
+    )
+    targets = evaluate_experiment_rules(df, spec)
+    day1 = targets[targets["trade_date"] == "2024-01-02"]
+    # Day 1: C has lowest momentum (0.05), so ascending order selects C
+    assert day1[day1["asset_id"] == "C"]["target_weight"].iloc[0] == 1.0
+
