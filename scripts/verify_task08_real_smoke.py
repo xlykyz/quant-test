@@ -55,18 +55,18 @@ def main() -> None:
     assert exp2.status == "SUCCESS"
 
     # Verify strict single-parameter change: all request fields identical except portfolio.top_n
-    req1 = exp1.request
-    req2 = exp2.request
-    assert req1.period == req2.period
-    assert req1.universe == req2.universe
-    assert req1.subject_type == req2.subject_type
-    assert req1.experiment.score == req2.experiment.score
-    assert req1.experiment.rank == req2.experiment.rank
-    assert req1.experiment.filter == req2.experiment.filter
-    assert req1.experiment.exit == req2.experiment.exit
-    assert req1.experiment.portfolio.get("weight_each") == req2.experiment.portfolio.get("weight_each") == 0.25
-    assert req1.experiment.portfolio.get("top_n") == 2
-    assert req2.experiment.portfolio.get("top_n") == 3
+    req1 = exp1.request_snapshot
+    req2 = exp2.request_snapshot
+    assert req1["period"] == req2["period"]
+    assert req1["universe"] == req2["universe"]
+    assert req1["subject_type"] == req2["subject_type"]
+    assert req1["experiment"]["score"] == req2["experiment"]["score"]
+    assert req1["experiment"]["rank"] == req2["experiment"]["rank"]
+    assert req1["experiment"].get("filter") == req2["experiment"].get("filter")
+    assert req1["experiment"].get("exit") == req2["experiment"].get("exit")
+    assert req1["experiment"]["portfolio"]["weight_each"] == req2["experiment"]["portfolio"]["weight_each"] == 0.25
+    assert req1["experiment"]["portfolio"]["top_n"] == 2
+    assert req2["experiment"]["portfolio"]["top_n"] == 3
 
     assert exp1.provenance["config_hash"] != exp2.provenance["config_hash"]
     print("Config Hash 1:", exp1.provenance["config_hash"])
