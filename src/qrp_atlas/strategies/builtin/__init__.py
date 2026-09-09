@@ -27,6 +27,7 @@ from .cross_section import (
 )
 from .system_b_basic import SystemBBasicStrategy
 from .system_b_authorization import SystemBAuthorizationStrategy
+from .system_b_portfolio import SystemBPortfolioStrategy
 from .event_drift import EventDriftBasicStrategy
 
 
@@ -49,6 +50,7 @@ __all__ = [
     "StochasticMeanReversionStrategy",
     "SystemBAuthorizationStrategy",
     "SystemBBasicStrategy",
+    "SystemBPortfolioStrategy",
     "TimeSeriesMomentumStrategy",
     "VolatilityAdjustedMomentumStrategy",
     "VolumeConfirmedEmaTrendStrategy",

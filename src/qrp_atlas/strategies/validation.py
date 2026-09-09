@@ -320,6 +320,38 @@ def validate_event_strategy_input(
     )
 
 
+_SYSTEM_B_FACT_FIELDS = (
+    "comparison_score",
+    "entry_eligible",
+    "system_b_exit_triggered",
+    "severe_abnormal_supervision_status",
+)
+
+
+def validate_system_b_portfolio_input(
+    definition: StrategyDefinition,
+    strategy_input: StrategyInput,
+) -> StrategyInput:
+    """Normalize the System B portfolio input contract without common strict NA rules."""
+
+    if not isinstance(strategy_input, StrategyInput):
+        raise StrategyValidationError("strategy_input must be a StrategyInput instance")
+    if not isinstance(strategy_input.prepared_data, pd.DataFrame):
+        raise StrategyValidationError("prepared_data must be a pandas DataFrame")
+    if not isinstance(strategy_input.holdings, Mapping):
+        raise StrategyValidationError("holdings must be a mapping")
+
+    missing = [
+        field
+        for field in (*definition.required_fields, *_SYSTEM_B_FACT_FIELDS)
+        if field not in strategy_input.prepared_data.columns
+    ]
+    if missing:
+        raise StrategyValidationError(f"prepared_data missing required columns: {missing}")
+
+    return strategy_input
+
+
 def _normalize_input_envelope(
     strategy_input: StrategyInput,
     prepared_data: pd.DataFrame,
@@ -460,11 +492,12 @@ def run_strategy_checked(
 
     normalizer = input_normalizer
     if normalizer is None:
-        normalizer = (
-            validate_event_strategy_input
-            if strategy.definition.code == "event_drift_basic"
-            else validate_and_normalize_strategy_input
-        )
+        if strategy.definition.code == "event_drift_basic":
+            normalizer = validate_event_strategy_input
+        elif strategy.definition.code == "system_b_portfolio":
+            normalizer = validate_system_b_portfolio_input
+        else:
+            normalizer = validate_and_normalize_strategy_input
     normalized_input = normalizer(strategy.definition, strategy_input)
     result = strategy.run(normalized_input)
     return validate_strategy_result(strategy.definition, result)
