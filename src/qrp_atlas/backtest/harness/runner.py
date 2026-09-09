@@ -308,25 +308,10 @@ def back(
         if isinstance(request.universe, (tuple, list)):
             asset_ids = [str(t).strip() for t in request.universe]
         elif request.universe == "system_b_active_pools":
-            # Query active pool members from pool DB or quant DB
-            from qrp_atlas.config.settings import get_settings
-            import duckdb
-            settings = get_settings()
-            pools_db = getattr(settings, "pool_db_path", None)
-            if pools_db and os.path.isfile(pools_db):
-                con = duckdb.connect(str(pools_db), read_only=True)
-            else:
-                con = duckdb.connect(str(settings.db_path), read_only=True)
-            try:
-                rows = con.execute(
-                    f"SELECT DISTINCT ticker FROM system_b_pool_membership_daily "
-                    f"WHERE trade_date >= '{request.period[0]}' AND trade_date <= '{request.period[1]}'"
-                ).fetchall()
-                asset_ids = [r[0] for r in rows]
-            finally:
-                con.close()
-            if not asset_ids:
-                warnings.append("Universe 'system_b_active_pools' returned 0 members in period")
+            raise HarnessValidationError(
+                "Universe preset 'system_b_active_pools' is disabled to prevent PIT universe leakage. "
+                "Use an explicit ticker list or 'all_a'."
+            )
 
         price_df = load_stock_prices(
             start_date=request.period[0],

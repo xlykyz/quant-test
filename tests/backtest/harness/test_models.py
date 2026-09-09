@@ -111,6 +111,15 @@ def test_back_request_period_and_universe_validation():
             factor=factor,
         )
 
+    # system_b_active_pools disabled to prevent PIT leakage
+    with pytest.raises(HarnessValidationError, match="system_b_active_pools"):
+        BackRequest(
+            period=("2024-01-01", "2024-06-30"),
+            universe="system_b_active_pools",
+            subject_type=SubjectType.FACTOR,
+            factor=factor,
+        )
+
     # Valid universe preset
     req = BackRequest(
         period=("2024-01-01", "2024-06-30"),

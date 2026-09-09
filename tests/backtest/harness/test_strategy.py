@@ -121,3 +121,56 @@ def test_guard_direct_multiday_system_b_in_vectorized_runner_fails():
         # run_strategy_portfolio_backtest will call prepare_strategy_data then run_strategy_checked
         # on the entire multi-day price_df, which will fail because SystemB requires single trade_date
         run_strategy_portfolio_backtest("system_b_portfolio", price_df, config)
+
+
+def test_system_b_missing_authorization_fails_closed():
+    """Verify missing authorization preserves fail-closed semantics: no NEW positions created."""
+    facts_df = _sample_system_b_facts()
+    price_df = _sample_prices()
+    config = _sample_config()
+
+    # Note: NO 'authorization' passed in runtime_context or parameters
+    result = run_system_b_day_by_day_replay(
+        facts_df=facts_df,
+        price_df=price_df,
+        config=config,
+        runtime_context={
+            "comparison_score_provenance": {
+                "score_calculation_version": "v1.0",
+                "rule_version_set_id": "rules-v1",
+                "parameter_set_id": "params-v1",
+                "input_snapshot_id": "snap-v1",
+            },
+        },
+    )
+
+    # Replay completes without exception
+    assert len(result.portfolio_targets) == 2
+    # But fail-closed: NO NEW positions allowed
+    day1_target = result.portfolio_targets[0]
+    assert len(day1_target.positions) == 0
+
+    # Decision reasons must retain fail-closed reason
+    assert len(result.strategy_results) >= 1
+    day1_decisions = result.strategy_results[0].decisions
+    assert len(day1_decisions) > 0
+    for dec in day1_decisions:
+        assert "NEW_POSITION_AUTHORIZATION_UNAVAILABLE" in dec.reason_code
+
+
+def test_unclassified_strategy_fails_fast():
+    """Verify run_formal_strategy fails fast on unclassified/unknown strategies without guessing."""
+    price_df = _sample_prices()
+    config = _sample_config()
+
+    spec = StrategySpec(code="unsupported_dummy_strategy")
+
+    # Fails fast without facts_df
+    with pytest.raises(HarnessValidationError, match="not a supported execution model"):
+        run_formal_strategy(spec, price_df, config)
+
+    # Fails fast even with facts_df
+    facts_df = _sample_system_b_facts()
+    with pytest.raises(HarnessValidationError, match="not a supported execution model"):
+        run_formal_strategy(spec, price_df, config, facts_df=facts_df)
+

@@ -92,10 +92,6 @@ def run_system_b_day_by_day_replay(
     params = dict(parameters or {})
     ctx = dict(runtime_context or {})
 
-    # Injected authorization default if not provided
-    if "authorization" not in ctx and "authorization" not in params:
-        ctx["authorization"] = "AUTHORIZED"
-
     current_holdings: dict[str, StrategyHoldingState] = {}
     all_target_weight_frames: list[pd.DataFrame] = []
     strategy_results: list[StrategyRunResult] = []
@@ -220,28 +216,8 @@ def run_formal_strategy(
             portfolio_targets=(),
         )
 
-    # For any unclassified strategy: if facts_df provided, try day-by-day; else vectorized
-    if facts_df is not None:
-        return run_system_b_day_by_day_replay(
-            facts_df=facts_df,
-            price_df=price_df,
-            config=config,
-            parameters=spec.params,
-            runtime_context=spec.runtime_context,
-            strategy_code=spec.code,
-            version=spec.version,
-        )
-    run = run_strategy_portfolio_backtest(
-        code=code,
-        price_df=price_df,
-        config=config,
-        parameters=spec.params,
-        version=spec.version,
-        runtime_context=spec.runtime_context,
-    )
-    return StrategyDriverResult(
-        portfolio_result=run.portfolio_result,
-        target_weights=run.target_weights,
-        strategy_results=(run.strategy_result,),
-        portfolio_targets=(),
+    raise HarnessValidationError(
+        f"Strategy '{code}' is not a supported execution model in Task08 harness. "
+        f"Supported: 'system_b_portfolio' (day-by-day), or vectorized {sorted(VECTORIZED_STRATEGIES)}. "
+        f"Unclassified strategies fail fast to prevent guessing execution semantics."
     )

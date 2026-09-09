@@ -14,7 +14,7 @@ import uuid
 import pandas as pd
 
 
-ALLOWED_UNIVERSE_PRESETS = frozenset({"all_a", "system_b_active_pools"})
+ALLOWED_UNIVERSE_PRESETS = frozenset({"all_a"})
 ALLOWED_FILTER_OPS = frozenset({"eq", "ne", "gt", "ge", "lt", "le", "in", "not_in"})
 
 
@@ -352,6 +352,11 @@ class BackRequest:
         # Validate universe
         if self.universe is not None:
             if isinstance(self.universe, str):
+                if self.universe == "system_b_active_pools":
+                    raise HarnessValidationError(
+                        "Universe preset 'system_b_active_pools' is disabled in Task08 to prevent PIT universe leakage "
+                        "(daily dynamic membership resolver pending). Use an explicit ticker list or 'all_a'."
+                    )
                 if self.universe not in ALLOWED_UNIVERSE_PRESETS:
                     raise HarnessValidationError(
                         f"Unknown universe preset {self.universe!r}; allowed: {sorted(ALLOWED_UNIVERSE_PRESETS)}"
