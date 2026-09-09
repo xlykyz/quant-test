@@ -30,6 +30,7 @@ from .validation import (
     validate_and_normalize_strategy_input,
     validate_event_strategy_input,
     validate_strategy_result,
+    validate_system_b_portfolio_input,
 )
 from .selection import (
     EligibilityError,
@@ -44,6 +45,11 @@ from .selection import (
 )
 from .builtin.cross_section import compute_composite_score
 from .builtin.system_b_authorization import SystemBAuthorizationStrategy
+from .builtin.system_b_portfolio import (
+    PORTFOLIO_WEIGHT_TOLERANCE,
+    SystemBPortfolioStrategy,
+    resolve_system_b_portfolio_target,
+)
 
 
 __all__ = [
@@ -65,11 +71,15 @@ __all__ = [
     "StrategyPortfolioTargetPosition",
     "StrategyType",
     "StrategyValidationError",
+    "PORTFOLIO_WEIGHT_TOLERANCE",
+    "resolve_system_b_portfolio_target",
     "run_strategy_checked",
     "validate_and_normalize_strategy_input",
     "validate_event_strategy_input",
     "validate_strategy_result",
+    "validate_system_b_portfolio_input",
     "SystemBAuthorizationStrategy",
+    "SystemBPortfolioStrategy",
     "get_strategy",
     "list_strategies",
     "run_strategy",

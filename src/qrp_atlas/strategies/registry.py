@@ -87,11 +87,13 @@ def _build_default_registry() -> StrategyRegistry:
     )
     from .builtin.system_b_basic import SystemBBasicStrategy
     from .builtin.system_b_authorization import SystemBAuthorizationStrategy
+    from .builtin.system_b_portfolio import SystemBPortfolioStrategy
     from .builtin.event_drift import EventDriftBasicStrategy
 
     registry = StrategyRegistry()
     registry.register(SystemBBasicStrategy())
     registry.register(SystemBAuthorizationStrategy())
+    registry.register(SystemBPortfolioStrategy())
 
     registry.register(TimeSeriesMomentumStrategy())
     registry.register(DualSmaTrendStrategy())
