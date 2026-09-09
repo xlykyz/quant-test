@@ -13,6 +13,19 @@ from .models import (
 )
 from .exposure_data import prepare_cross_section_exposure_panel
 from .factor_data import prepare_financial_factor_panel
+from .harness import (
+    BackRequest,
+    BackResult,
+    ExecutionSpec,
+    ExperimentSpec,
+    FactorSpec,
+    FilterPredicate,
+    HarnessError,
+    HarnessValidationError,
+    StrategySpec,
+    SubjectType,
+    back,
+)
 from .residual_data import (
     ResidualDataError,
     ResidualPanelPreparation,
@@ -153,4 +166,13 @@ __all__ = [
     "EventStudyError",
     "compute_event_forward_returns",
     "run_earnings_forecast_event_study",
+    "back",
+    "BackRequest",
+    "BackResult",
+    "FactorSpec",
+    "ExperimentSpec",
+    "StrategySpec",
+    "ExecutionSpec",
+    "HarnessError",
+    "HarnessValidationError",
 ]
