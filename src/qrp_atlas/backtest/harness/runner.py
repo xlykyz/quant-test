@@ -331,7 +331,7 @@ def back(
         price_df = load_stock_prices(
             start_date=request.period[0],
             end_date=request.period[1],
-            asset_ids=asset_ids,
+            tickers=asset_ids,
         )
         if price_df.empty:
             raise HarnessError(f"No price data loaded for period {request.period} and universe {request.universe}")
